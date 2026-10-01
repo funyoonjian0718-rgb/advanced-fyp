@@ -1,0 +1,20 @@
+services:
+
+  postgres:
+    image: postgres:17
+    container_name: advanced-fyp-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: advanced_fyp
+      POSTGRES_USER: advanced_fyp_user
+      POSTGRES_PASSWORD: advanced_fyp_password
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
