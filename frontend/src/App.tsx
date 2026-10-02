@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 
 import AppLayout from "./layouts/AppLayout";
+import ProtectedRoute from "./components/ProtectedRoute";
 
 import Login from "./pages/Login";
 import Register from "./pages/Register";
@@ -14,34 +15,64 @@ function App() {
         <BrowserRouter>
             <Routes>
 
-                {/* Public routes */}
+                {/* 
+                    Public routes.
+                    
+                    These pages can be accessed without logging in.
+                */}
                 <Route path="/login" element={<Login />} />
                 <Route path="/register" element={<Register />} />
 
-                {/* Application routes */}
-                <Route element={<AppLayout />}>
-                    <Route
-                        path="/dashboard"
-                        element={<Dashboard />}
-                    />
 
-                    <Route
-                        path="/chat"
-                        element={<Chat />}
-                    />
+                {/*
+                    Protected routes.
 
-                    <Route
-                        path="/history"
-                        element={<History />}
-                    />
+                    ProtectedRoute checks whether the user
+                    has an access token.
 
-                    <Route
-                        path="/profile"
-                        element={<Profile />}
-                    />
+                    If there is no token:
+                        → /login
+
+                    If there is a token:
+                        → allow access
+                */}
+                <Route element={<ProtectedRoute />}>
+
+                    {/* 
+                        AppLayout provides the common
+                        sidebar/topbar structure.
+                    */}
+                    <Route element={<AppLayout />}>
+
+                        <Route
+                            path="/dashboard"
+                            element={<Dashboard />}
+                        />
+
+                        <Route
+                            path="/chat"
+                            element={<Chat />}
+                        />
+
+                        <Route
+                            path="/history"
+                            element={<History />}
+                        />
+
+                        <Route
+                            path="/profile"
+                            element={<Profile />}
+                        />
+
+                    </Route>
+
                 </Route>
 
-                {/* Default route */}
+
+                {/* 
+                    If the user enters an unknown URL,
+                    send them to the dashboard.
+                */}
                 <Route
                     path="*"
                     element={<Navigate to="/dashboard" replace />}
