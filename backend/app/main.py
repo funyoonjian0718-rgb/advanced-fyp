@@ -1,19 +1,31 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.core.database import engine
 from app.api.auth import router as auth_router
+from app.api.chat import router as chat_router
 from app.api.profile import router as profile_router
 from app.api.users import router as users_router
+from app.services.vector_store import close_vector_client
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    close_vector_client()
 
 app = FastAPI(
     title="Advanced FYP API",
     description="Backend API for the Advanced Dietary Advice System",
-    version="0.1.0"
+    version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.include_router(auth_router)
+app.include_router(chat_router)
 app.include_router(profile_router)
 app.include_router(users_router)
 
