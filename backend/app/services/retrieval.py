@@ -1,9 +1,12 @@
+import copy
 import re
 from collections import defaultdict
+from dataclasses import dataclass, replace
 from functools import lru_cache
 
 from rank_bm25 import BM25Okapi
 from sqlalchemy import select
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
@@ -17,6 +20,67 @@ def _tokens(text: str) -> list[str]:
     return re.findall(r"[\w]+(?:['’-][\w]+)?", text.casefold())
 
 
+def _normalize_food_token(token: str) -> str:
+    token = token.replace("’", "'")
+    if token.endswith("'s"):
+        token = token[:-2]
+    if len(token) > 4 and token.endswith("ies"):
+        return token[:-3] + "y"
+    if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
+    return token
+
+
+_FOOD_QUERY_IGNORED = {
+    "a", "about", "and", "are", "do", "does", "for", "give", "have",
+    "how", "in", "is", "many", "much", "of", "per", "the", "what",
+    "with", "g", "gram", "grams", "kg", "mg", "ml", "100", "one",
+    "medium", "large", "small", "serving", "size", "portion", "nutrition",
+    "information", "facts", "content",
+} | {_normalize_food_token(token) for token in NUTRIENT_TERMS}
+
+
+def _food_match_score(query: str, item: Evidence) -> tuple[int, int, int] | None:
+    if item.kind != "food":
+        return None
+    query_tokens = [
+        _normalize_food_token(token)
+        for token in _tokens(query)
+        if _normalize_food_token(token) not in _FOOD_QUERY_IGNORED
+    ]
+    if not query_tokens:
+        return None
+    name = str(item.metadata.get("name", ""))
+    candidates = [
+        (3, name),
+        *( (2, alias) for alias in re.findall(r"\(([^()]*)\)", name) ),
+        *(
+            (1, alias)
+            for alias in re.split(
+                r"[,;|]",
+                str(item.metadata.get("aliases", "")),
+            )
+        ),
+    ]
+    matches: list[tuple[int, int, int]] = []
+    for source_priority, candidate in candidates:
+        candidate_tokens = [
+            _normalize_food_token(token)
+            for token in _tokens(candidate)
+        ]
+        if not candidate_tokens:
+            continue
+        if query_tokens == candidate_tokens:
+            matches.append((3, len(candidate_tokens), source_priority))
+            continue
+        if len(candidate_tokens) <= len(query_tokens) and any(
+            query_tokens[index : index + len(candidate_tokens)] == candidate_tokens
+            for index in range(len(query_tokens) - len(candidate_tokens) + 1)
+        ):
+            matches.append((2, len(candidate_tokens), source_priority))
+    return max(matches, default=None)
+
+
 def _load_corpus(db: Session) -> list[Evidence]:
     foods = db.scalars(
         select(FoodNutrition)
@@ -28,94 +92,81 @@ def _load_corpus(db: Session) -> list[Evidence]:
         .options(joinedload(DocumentChunk.source))
         .order_by(DocumentChunk.id)
     ).all()
-    return [*(food_evidence(food) for food in foods), *(chunk_evidence(chunk) for chunk in chunks)]
+    return [
+        *(food_evidence(food) for food in foods),
+        *(chunk_evidence(chunk) for chunk in chunks),
+    ]
+
+
+@dataclass(frozen=True)
+class _RetrievalIndex:
+    corpus: tuple[Evidence, ...]
+    tokenized_corpus: tuple[tuple[str, ...], ...]
+    bm25: BM25Okapi | None
+
+
+@lru_cache(maxsize=4)
+def _load_retrieval_index(engine: Engine) -> _RetrievalIndex:
+    with Session(engine) as db:
+        corpus = _load_corpus(db)
+    tokenized = tuple(tuple(_tokens(item.text)) for item in corpus)
+    bm25 = BM25Okapi([list(tokens) for tokens in tokenized]) if corpus else None
+    return _RetrievalIndex(tuple(corpus), tokenized, bm25)
+
+
+def invalidate_retrieval_cache() -> None:
+    _load_retrieval_index.cache_clear()
 
 
 def _bm25_rank(
     query: str,
-    corpus: list[Evidence],
-    tokenized_corpus: list[list[str]],
+    retrieval_index: _RetrievalIndex,
     limit: int,
 ) -> list[tuple[Evidence, float]]:
-    if not corpus:
+    if not retrieval_index.corpus or retrieval_index.bm25 is None:
         return []
-    scores = BM25Okapi(tokenized_corpus).get_scores(_tokens(query))
+    scores = retrieval_index.bm25.get_scores(_tokens(query))
     ranked_indices = sorted(
         range(len(scores)),
-        key=lambda index: scores[index],
+        key=lambda corpus_index: scores[corpus_index],
         reverse=True,
     )[:limit]
     return [
-        (corpus[index], float(scores[index]))
-        for index in ranked_indices
-        if scores[index] > 0
+        (retrieval_index.corpus[corpus_index], float(scores[corpus_index]))
+        for corpus_index in ranked_indices
+        if scores[corpus_index] > 0
     ]
 
 
 def _direct_food_matches(query: str, corpus: list[Evidence]) -> list[Evidence]:
-    ignored = NUTRIENT_TERMS | {
-        "a",
-        "about",
-        "and",
-        "are",
-        "do",
-        "does",
-        "for",
-        "give",
-        "have",
-        "how",
-        "in",
-        "is",
-        "many",
-        "much",
-        "of",
-        "per",
-        "the",
-        "what",
-        "with",
-        "g",
-        "gram",
-        "grams",
-        "kg",
-        "mg",
-        "ml",
-        "100",
-    }
-    query_tokens = set(_tokens(query)) - ignored
+    query_tokens = [
+        token
+        for token in _tokens(query)
+        if _normalize_food_token(token) not in _FOOD_QUERY_IGNORED
+    ]
     if not query_tokens:
         return []
+    food_query = " ".join(query_tokens)
 
-    matches: list[tuple[int, int, Evidence]] = []
+    matches: list[tuple[int, int, int, float, Evidence]] = []
     for item in corpus:
-        if item.kind != "food":
-            continue
-        name_tokens = set(_tokens(str(item.metadata.get("name", ""))))
-        if name_tokens and name_tokens.issubset(query_tokens):
-            matches.append((len(name_tokens), len(name_tokens), item))
-            continue
-        aliases = str(item.metadata.get("aliases", ""))
-        alias_match = max(
-            (
-                len(alias_tokens)
-                for alias_tokens in (
-                    set(_tokens(alias))
-                    for alias in re.split(r"[,;|]", aliases)
-                )
-                if alias_tokens and alias_tokens.issubset(query_tokens)
-            ),
-            default=0,
-        )
-        if alias_match:
-            matches.append((alias_match, alias_match - 1, item))
+        score = _food_match_score(food_query, item)
+        if score is not None:
+            matches.append((*score, item.authority_score, item))
 
     ranked = sorted(
         matches,
-        key=lambda match: (match[0], match[1], match[2].authority_score),
+        key=lambda match: (match[0], match[1], match[2]),
         reverse=True,
     )
-    for _, _, item in ranked:
-        item.retrieval_score = 1.0
-    return [item for _, _, item in ranked]
+    return [
+        replace(
+            item,
+            metadata=copy.deepcopy(item.metadata),
+            retrieval_score=1.0,
+        )
+        for _, _, _, _, item in ranked
+    ]
 
 
 def retrieve_evidence(
@@ -124,19 +175,16 @@ def retrieve_evidence(
     *,
     candidate_limit: int = 30,
 ) -> list[Evidence]:
-    corpus = _load_corpus(db)
-    if not corpus:
+    index = _load_retrieval_index(db.get_bind())
+    if not index.corpus:
         return []
 
-    tokenized_corpus = [_tokens(item.text) for item in corpus]
     bm25_rankings: list[list[tuple[Evidence, float]]] = []
     dense_rankings: list[list[tuple[Evidence, float]]] = []
     query_set = tuple(dict.fromkeys((*plan.queries, *plan.subquestions)))
 
     for query in query_set:
-        bm25_rankings.append(
-            _bm25_rank(query, corpus, tokenized_corpus, candidate_limit)
-        )
+        bm25_rankings.append(_bm25_rank(query, index, candidate_limit))
         dense_rankings.append(search_dense(query, candidate_limit))
 
     fused: dict[str, Evidence] = {}
@@ -144,12 +192,21 @@ def retrieve_evidence(
     for rankings in (bm25_rankings, dense_rankings):
         for ranked in rankings:
             for rank, (item, raw_score) in enumerate(ranked, start=1):
-                fused[item.evidence_id] = item
+                request_item = fused.get(item.evidence_id)
+                if request_item is None:
+                    request_item = replace(
+                        item,
+                        metadata=copy.deepcopy(item.metadata),
+                    )
+                    fused[item.evidence_id] = request_item
                 authority_multiplier = 0.5 + item.authority_score * 0.5
                 fused_scores[item.evidence_id] += (
                     authority_multiplier / (60 + rank)
                 )
-                item.retrieval_score = max(item.retrieval_score, raw_score)
+                request_item.retrieval_score = max(
+                    request_item.retrieval_score,
+                    raw_score,
+                )
 
     ordered = sorted(
         fused.values(),
@@ -161,7 +218,7 @@ def retrieve_evidence(
     elif plan.intent == "document_evidence":
         ordered = [item for item in ordered if item.kind == "document"]
     if plan.intent == "structured_lookup":
-        direct_matches = _direct_food_matches(plan.queries[0], corpus)
+        direct_matches = _direct_food_matches(plan.queries[0], list(index.corpus))
         direct_ids = {item.evidence_id for item in direct_matches}
         ordered = direct_matches + [
             item for item in ordered if item.evidence_id not in direct_ids

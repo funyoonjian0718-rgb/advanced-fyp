@@ -15,7 +15,6 @@ export interface ChatMessage {
     content: string;
     citations: ChatCitation[];
     warnings: string[];
-    confidence: number | null;
     created_at: string;
 }
 
@@ -32,7 +31,6 @@ export interface ChatResponse {
     session_id: number;
     answer: string;
     citations: ChatCitation[];
-    confidence: number;
     warnings: string[];
     intent: string;
 }

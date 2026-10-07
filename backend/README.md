@@ -15,11 +15,15 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 python -m pip install -r .\backend\requirements-ai.txt
 ```
 
-Model weights are downloaded on first use and cached under
-`backend\.model-cache`. The default Qwen 0.5B model is selected for modest local
-GPU memory. `LLM_MODEL_ID`, `EMBEDDING_MODEL_ID`, and `RERANKER_MODEL_ID` can be
-changed in the root `.env`. `LLM_ADAPTER_PATH` defaults to
+Model weights are downloaded on first use and cached in the repository-root
+`model-cache` directory, outside the backend source tree watched by Uvicorn.
+Override it with `MODEL_CACHE_PATH` if desired. The default Qwen 0.5B model is
+selected for modest local GPU memory. `LLM_MODEL_ID`,
+`EMBEDDING_MODEL_ID`, and `RERANKER_MODEL_ID` can be changed in the root `.env`.
+`LLM_ADAPTER_PATH` defaults to
 `backend\models\dietary-assistant`.
+An existing adapter without a `curated_training_manifest.json` is deliberately
+not loaded; retrain from a human-reviewed dataset to activate a LoRA adapter.
 
 ## Database, ingestion, and API
 
@@ -37,13 +41,37 @@ as `.\data\qdrant` from restarting the server while handling a chat request.
 If Uvicorn is already running, stop it with `Ctrl+C` and restart it with the
 command above.
 
-The ingestion command imports the root
-`database\malaysian_food_rag_dataset_EXPANDED_full.json` by default. It also
-accepts curated PDF, text, or Markdown references:
+By default, ingestion reads RAG chunks from
+`knowledge-base\processed\v2\malaysian_food_rag_v2_multichunk.jsonl`. Set
+`RAG_CHUNKS_PATH` in the root `.env` or pass `--rag-chunks` to select another
+multichunk JSONL file. Structured food imports are separate and optional:
 
 ```powershell
 python -m app.scripts.ingest_knowledge `
-  --skip-nutrition `
+  --foods ..\knowledge-base\processed\v2\malaysian_food_rag_v2_foods.csv
+```
+
+The expanded JSON and CSV are preserved under
+`knowledge-base\raw\original`; the current multichunk JSONL is under
+`knowledge-base\processed\v2`. The v2 foods CSV, human-inspection multichunk
+CSV, and standalone SQLite file were not present when this layout was set up,
+so they were not generated or added. If supplied later, the SQLite file belongs
+under `knowledge-base\database` and remains a standalone reference, never an
+ingestion source.
+
+Food CSV or JSON records populate PostgreSQL `food_nutrition` only. Multichunk
+JSONL records populate PostgreSQL `document_chunks` and the local Qdrant index
+only; they are not parsed into structured food records. The human-inspection
+CSV and standalone SQLite reference database are not ingestion inputs. Importing
+the default v2 chunk file also clears Qdrant entries from the previous expanded
+dataset, but preserves PostgreSQL food rows; the RAG import does not mutate the
+structured food dataset.
+
+It also accepts curated PDF, text, or Markdown references:
+
+```powershell
+python -m app.scripts.ingest_knowledge `
+  --skip-rag-chunks `
   --document ..\knowledge-base\malaysian-guidelines.pdf `
   --document-source-type government_guideline `
   --document-authority 0.95 `
@@ -55,11 +83,42 @@ embeddings in the local Qdrant store under `backend\data\qdrant`. Re-running
 ingestion replaces records for the same source. The API's Swagger UI is at
 `http://localhost:8000/docs`.
 
+### Rebuilding development knowledge data
+
+Stop Uvicorn first so it releases the local Qdrant store. The explicit reset
+below deletes only `document_chunks`, `food_nutrition`, and
+`knowledge_sources` from the configured database, and deletes only the
+`dietary_evidence` Qdrant collection. It does not touch users, profiles, chat
+sessions, or messages:
+
+```powershell
+python -m app.scripts.reset_knowledge --confirm
+```
+
+Then import the structured food CSV when one is available, followed by the
+default RAG chunks:
+
+```powershell
+python -m app.scripts.ingest_knowledge `
+  --foods ..\knowledge-base\processed\v2\malaysian_food_rag_v2_foods.csv
+```
+
+If there is no processed food CSV yet, run
+`python -m app.scripts.ingest_knowledge` without `--foods`; it will import the
+default multichunk JSONL into PostgreSQL and create a fresh Qdrant collection
+while embedding the chunks. The SQLite reference database is never loaded by
+this application.
+
 The assistant uses structured food records, hybrid BM25/dense retrieval, RRF,
 a cross-encoder reranker, deterministic dietary filtering, evidence
-compression, local JSON generation, citation checks, and confidence scoring.
+compression, local JSON generation, and citation checks. It does not expose an
+uncalibrated numeric confidence score.
 Authenticated conversation history is stored per user. The long-term user
-profile and short-term conversation summary are kept separate.
+profile and short-term conversation summary are kept separate. Each turn's
+retrieval and factual answer use the current question only; restate the food
+when asking a follow-up so facts from an earlier food cannot leak into the
+answer. Structured food lookups use an exact food-name match and return
+recorded values directly without calling the language model.
 
 ## Dataset safety and provenance
 
@@ -77,14 +136,18 @@ assuming that missing data means safe.
 ## Fine-tuning the local model
 
 The project uses a small open-weight base model with a locally saved LoRA
-adapter; it does not train a foundation model from scratch. Build a starter JSONL file from the ingested database, or use a UTF-8 curated
-JSONL file with at least four examples. Generated examples retain source IDs and
-the existing records' authority limitations; they are not validation of the
-source facts:
+adapter; it does not train a foundation model from scratch. Fine-tuning requires
+a human-reviewed UTF-8 JSONL file with at least four examples. Do not use
+automatically generated database rows as fine-tuning answers. Each record must
+set `"reviewed": true` after checking its prompt and answer. Supported formats:
+`{"reviewed":true,"prompt":"...","response":"..."}`,
+`{"reviewed":true,"instruction":"...","input":"...","output":"..."}`,
+`{"reviewed":true,"question":"...","answer":"..."}`, or a v2
+`{"reviewed":true,"messages":[{"role":"user","content":"..."},{"role":"assistant","content":"..."}]}`
+conversation record.
 
 ```powershell
-python -m app.ml.build_training_data
-python -m app.ml.train_adapter --data .\data\training\dietary_assistant.jsonl
+python -m app.ml.train_adapter --data .\data\training\curated.jsonl
 ```
 
 Training downloads the configured base model into the local cache and writes
@@ -100,3 +163,14 @@ From `backend` with its virtual environment active:
 ```powershell
 pytest
 ```
+
+Measure rule-based query intent classification against the manually labeled
+100-question baseline:
+
+```powershell
+python -m app.scripts.evaluate_query_intents
+```
+
+The report includes overall and per-intent accuracy, a confusion summary, and
+the misclassified questions. Update the evaluation labels manually as the
+baseline improves; the benchmark does not replace the rule-based processor.

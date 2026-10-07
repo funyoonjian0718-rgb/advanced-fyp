@@ -47,6 +47,12 @@ def ensure_collection() -> None:
     )
 
 
+def reset_collection() -> None:
+    client = get_vector_client()
+    if client.collection_exists(COLLECTION_NAME):
+        client.delete_collection(COLLECTION_NAME)
+
+
 def replace_source_vectors(source_id: int, evidence: list[Evidence]) -> None:
     client = get_vector_client()
     if not client.collection_exists(COLLECTION_NAME):

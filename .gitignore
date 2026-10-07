@@ -6,6 +6,9 @@ node_modules/
 venv/
 __pycache__/
 *.py[cod]
+# AI model cache
+model-cache/
+# Legacy model cache location
 backend/.model-cache/
 backend/data/
 backend/models/
