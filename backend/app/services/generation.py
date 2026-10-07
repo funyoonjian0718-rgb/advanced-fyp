@@ -12,6 +12,7 @@ from app.schemas.chat import ChatCitation
 from app.services.constraints import ConstraintResult
 from app.services.evidence import Evidence
 from app.services.query_processor import QueryPlan
+from app.services.retrieval import _food_match_score
 
 os.environ.setdefault("HF_HOME", str(settings.model_cache_path))
 os.environ.setdefault("TRANSFORMERS_CACHE", str(settings.model_cache_path))
@@ -29,7 +30,6 @@ class GeneratedAnswer(BaseModel):
 class VerifiedAnswer(BaseModel):
     answer: str
     citations: list[ChatCitation]
-    confidence: float
     warnings: list[str]
     supported_claims: int
     rejected_claims: int
@@ -54,6 +54,7 @@ STRUCTURED_FIELDS = (
     ("sodium", ("sodium", "salt"), "Sodium", "mg"),
     ("potassium", ("potassium",), "Potassium", "mg"),
     ("glycemic_index", ("glycemic", "glycaemic"), "Glycemic index", ""),
+    ("serving_size", ("serving size", "portion size"), "Serving", ""),
 )
 
 
@@ -76,7 +77,7 @@ def _load_model() -> tuple[Any, Any, Any]:
         low_cpu_mem_usage=True,
     )
     adapter_path = Path(settings.llm_adapter_path)
-    if (adapter_path / "adapter_config.json").is_file():
+    if _has_reviewed_adapter(adapter_path):
         model = PeftModel.from_pretrained(model, str(adapter_path))
     model.eval()
     return torch, tokenizer, model
@@ -90,6 +91,19 @@ def _evidence_prompt(evidence_items: list[Evidence]) -> str:
             f"authority={item.authority_score:.2f})\n{item.text}"
         )
         for item in evidence_items
+    )
+
+
+def _has_reviewed_adapter(adapter_path: Path) -> bool:
+    manifest_path = adapter_path / "curated_training_manifest.json"
+    if not (adapter_path / "adapter_config.json").is_file() or not manifest_path.is_file():
+        return False
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return (
+        isinstance(manifest, dict)
+        and manifest.get("format_version") == 1
+        and isinstance(manifest.get("human_reviewed_examples"), int)
+        and manifest["human_reviewed_examples"] >= 4
     )
 
 
@@ -112,7 +126,6 @@ def _build_prompt(
     question: str,
     plan: QueryPlan,
     evidence_items: list[Evidence],
-    conversation_summary: str,
 ) -> str:
     recommendation_rule = (
         "For food recommendations, only recommend a food when its evidence "
@@ -130,8 +143,6 @@ def _build_prompt(
         "Do not invent nutrition values, citations, diagnoses, or medical claims. "
         f"{recommendation_rule}\n\n"
         f"User constraints:\n{_profile_constraints(plan)}\n\n"
-        f"Recent conversation context (not a source of facts):\n"
-        f"{conversation_summary or 'None'}\n\n"
         f"Question:\n{question}\n\n"
         f"Evidence:\n{_evidence_prompt(evidence_items)}"
     )
@@ -270,16 +281,15 @@ def _structured_lookup_answer(
         return None
 
     question_tokens = set(_tokens(question))
-    matching_food = next(
-        (
-            item
-            for item in evidence_items
-            if item.kind == "food"
-            and set(_tokens(str(item.metadata.get("name", "")))).issubset(
-                question_tokens
-            )
-        ),
-        None,
+    matching_foods = [
+        (score, item)
+        for item in evidence_items
+        if (score := _food_match_score(question, item)) is not None
+    ]
+    matching_food = (
+        max(matching_foods, key=lambda match: match[0])[1]
+        if matching_foods
+        else None
     )
     if matching_food is None:
         return None
@@ -287,7 +297,11 @@ def _structured_lookup_answer(
     requested_fields = [
         field
         for field, terms, _, _ in STRUCTURED_FIELDS
-        if question_tokens.intersection(terms)
+        if (
+            bool(re.search(r"\b(?:serving|portion)\s+size\b", question.casefold()))
+            if field == "serving_size"
+            else question_tokens.intersection(terms)
+        )
     ]
     if not requested_fields:
         requested_fields = [field for field, _, _, _ in STRUCTURED_FIELDS]
@@ -301,6 +315,10 @@ def _structured_lookup_answer(
     claims: list[str] = []
     for field, _, label, unit in STRUCTURED_FIELDS:
         if field not in requested_fields:
+            continue
+        if field == "serving_size":
+            if serving_match:
+                claims.append(f"{food_name}: {label}: {serving}.")
             continue
         value_match = re.search(
             rf"(?im)^{re.escape(label)}:\s*"
@@ -333,23 +351,15 @@ def _structured_lookup_answer(
             "information as provisional."
         )
 
-    confidence = round(
-        min(
-            0.4 * matching_food.authority_score + 0.35 + 0.25,
-            matching_food.authority_score + 0.15,
-        ),
-        3,
-    )
     answer = " ".join(claims)
-    if confidence < settings.answer_confidence_threshold:
+    if matching_food.authority_score < 0.5:
         answer = (
-            "The available evidence is limited, so treat this as tentative: "
+            "This information comes from a limited-verification source: "
             + answer
         )
     return VerifiedAnswer(
         answer=answer,
         citations=[_citation_for(matching_food)],
-        confidence=confidence,
         warnings=warnings,
         supported_claims=len(claims),
         rejected_claims=0,
@@ -361,12 +371,15 @@ def generate_verified_answer(
     plan: QueryPlan,
     evidence_items: list[Evidence],
     constraints: ConstraintResult,
-    *,
-    conversation_summary: str = "",
 ) -> VerifiedAnswer:
     if (
         plan.recommendation_requested
-        and (plan.constraints.diets or plan.constraints.allergens)
+        and (
+            plan.constraints.diets
+            or plan.constraints.allergens
+            or plan.constraints.unknown_dietary_constraint
+            or plan.constraints.unknown_allergen_constraint
+        )
         and not any(item.kind == "food" for item in evidence_items)
     ):
         warnings = list(constraints.warnings)
@@ -382,7 +395,6 @@ def generate_verified_answer(
                 "a qualified dietitian."
             ),
             citations=[],
-            confidence=0.0,
             warnings=warnings,
             supported_claims=0,
             rejected_claims=0,
@@ -396,7 +408,6 @@ def generate_verified_answer(
                 "medical advice."
             ),
             citations=[],
-            confidence=0.0,
             warnings=constraints.warnings,
             supported_claims=0,
             rejected_claims=0,
@@ -410,10 +421,19 @@ def generate_verified_answer(
     )
     if structured_answer is not None:
         return structured_answer
+    if plan.structured_lookup:
+        return VerifiedAnswer(
+            answer=(
+                "I do not have an exact nutrition record for that food and "
+                "requested information."
+            ),
+            citations=[],
+            warnings=list(constraints.warnings),
+            supported_claims=0,
+            rejected_claims=0,
+        )
 
-    generated = _generate(
-        _build_prompt(question, plan, evidence_items, conversation_summary)
-    )
+    generated = _generate(_build_prompt(question, plan, evidence_items))
     evidence_by_id = {item.evidence_id: item for item in evidence_items}
     supported = [
         claim
@@ -423,7 +443,12 @@ def generate_verified_answer(
             evidence_by_id,
             require_compatible_food=(
                 plan.recommendation_requested
-                and bool(plan.constraints.diets or plan.constraints.allergens)
+                and bool(
+                    plan.constraints.diets
+                    or plan.constraints.allergens
+                    or plan.constraints.unknown_dietary_constraint
+                    or plan.constraints.unknown_allergen_constraint
+                )
             ),
             diets=plan.constraints.diets,
             allergens=plan.constraints.allergens,
@@ -455,10 +480,11 @@ def generate_verified_answer(
             "Some cited records have limited source verification; treat the "
             "information as provisional."
         )
-    if not (Path(settings.llm_adapter_path) / "adapter_config.json").is_file():
+    adapter_path = Path(settings.llm_adapter_path)
+    if not _has_reviewed_adapter(adapter_path):
         warnings.append(
-            "The base open-weight model is active; fine-tune it and save its "
-            "adapter before describing this as the project-trained model."
+            "The base open-weight model is active because no adapter trained "
+            "from a human-reviewed dataset is available."
         )
 
     if not supported:
@@ -466,41 +492,14 @@ def generate_verified_answer(
             "I do not have enough supported evidence to provide a reliable "
             "answer to that question."
         )
-        confidence = 0.0
         citations: list[ChatCitation] = []
     else:
         answer = " ".join(claim.text.strip() for claim in supported)
-        claim_coverage = len(supported) / max(len(generated.claims), 1)
-        source_quality = sum(item.authority_score for item in cited_evidence) / len(
-            cited_evidence
-        )
-        evidence_rank = {
-            item.evidence_id: rank
-            for rank, item in enumerate(evidence_items, start=1)
-        }
-        retrieval_quality = sum(
-            1 / evidence_rank[item.evidence_id] for item in cited_evidence
-        ) / len(cited_evidence)
-        calculated_confidence = (
-            0.4 * source_quality
-            + 0.35 * claim_coverage
-            + 0.25 * retrieval_quality
-        )
-        confidence = round(
-            min(calculated_confidence, source_quality + 0.15),
-            3,
-        )
-        if confidence < settings.answer_confidence_threshold:
-            answer = (
-                "The available evidence is limited, so treat this as tentative: "
-                + answer
-            )
         citations = [_citation_for(item) for item in cited_evidence]
 
     return VerifiedAnswer(
         answer=answer,
         citations=citations,
-        confidence=confidence,
         warnings=warnings,
         supported_claims=len(supported),
         rejected_claims=rejected_count,

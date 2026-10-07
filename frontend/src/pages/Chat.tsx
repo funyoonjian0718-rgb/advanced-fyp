@@ -117,7 +117,6 @@ function Chat() {
             content: message,
             citations: [],
             warnings: [],
-            confidence: null,
             created_at: new Date().toISOString(),
         };
         setMessages((current) => [...current, temporaryMessage]);
@@ -130,7 +129,6 @@ function Chat() {
                 content: result.answer,
                 citations: result.citations,
                 warnings: result.warnings,
-                confidence: result.confidence,
                 created_at: new Date().toISOString(),
             };
             setMessages((current) => [...current, assistantMessage]);
@@ -193,12 +191,6 @@ function Chat() {
                                             <li key={warning}>{warning}</li>
                                         ))}
                                     </ul>
-                                )}
-                                {message.confidence !== null && (
-                                    <p className="mt-2 text-xs text-gray-500">
-                                        Evidence confidence:{" "}
-                                        {Math.round(message.confidence * 100)}%
-                                    </p>
                                 )}
                                 <Citations items={message.citations} />
                             </>

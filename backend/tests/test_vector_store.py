@@ -51,6 +51,12 @@ def test_local_qdrant_indexes_searches_and_replaces_source(
         vector_store.replace_source_vectors(1, [replacement])
         results = vector_store.search_dense("dietary guideline", 5)
         assert [item.evidence_id for item, _ in results] == ["chunk-2"]
+
+        vector_store.reset_collection()
+        assert vector_store.search_dense("dietary guideline", 5) == []
+
+        vector_store.replace_source_vectors(1, [first])
+        assert vector_store.search_dense("dietary guideline", 5)[0][0].evidence_id == "chunk-1"
     finally:
         vector_store.get_vector_client().close()
         vector_store.get_vector_client.cache_clear()

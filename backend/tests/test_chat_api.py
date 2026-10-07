@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base, get_db
 from app.main import app
-from app.models.knowledge import ChatSession
+from app.models.knowledge import ChatMessage, ChatSession
 from app.models.user import User
 from app.services.auth_service import create_access_token, hash_password
 
@@ -94,7 +94,7 @@ def test_chat_turn_is_persisted_and_scoped_to_the_jwt_user() -> None:
 
     assert created.status_code == 200, created.text
     payload = created.json()
-    assert payload["confidence"] == 0
+    assert "confidence" not in payload
     session_id = payload["session_id"]
 
     history = _request("GET", "/api/chat/history", user_id=1)
@@ -146,5 +146,60 @@ def test_terminal_command_does_not_trigger_nutrition_retrieval(
     payload = response.json()
     assert payload["intent"] == "out_of_scope"
     assert payload["citations"] == []
-    assert payload["confidence"] == 0
+    assert "confidence" not in payload
     assert "terminal command" in payload["answer"]
+
+
+def test_new_nutrition_question_is_not_expanded_with_prior_chat_history(
+    sqlite_engine,
+    monkeypatch,
+) -> None:
+    with Session(sqlite_engine) as db:
+        session = ChatSession(
+            id=21,
+            user_id=1,
+            title="Food questions",
+        )
+        db.add(session)
+        db.flush()
+        db.add_all(
+            [
+                ChatMessage(
+                    session_id=session.id,
+                    role="user",
+                    content="What is the nutrition information for one medium apple?",
+                ),
+                ChatMessage(
+                    session_id=session.id,
+                    role="assistant",
+                    content="Apple: Protein: 1 g.",
+                ),
+            ]
+        )
+        db.commit()
+
+    captured_plans = []
+
+    def capture_plan(_db, plan, **_kwargs):
+        captured_plans.append(plan)
+        return []
+
+    monkeypatch.setattr(
+        "app.services.chat_service.retrieve_evidence",
+        capture_plan,
+    )
+    response = _request(
+        "POST",
+        "/api/chat",
+        user_id=1,
+        json={
+            "message": "What is the serving size of banana?",
+            "session_id": 21,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(captured_plans) == 1
+    assert captured_plans[0].intent == "structured_lookup"
+    assert all("apple" not in query for query in captured_plans[0].queries)
+    assert all("banana" in query for query in captured_plans[0].queries)

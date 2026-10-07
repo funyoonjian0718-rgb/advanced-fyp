@@ -7,9 +7,8 @@ from app.core.config import settings
 
 
 class TrainingExample:
-    def __init__(self, prompt: str, response: str) -> None:
-        self.prompt = prompt
-        self.response = response
+    def __init__(self, messages: list[dict[str, str]]) -> None:
+        self.messages = messages
 
 
 def _read_examples(path: Path) -> list[TrainingExample]:
@@ -23,16 +22,70 @@ def _read_examples(path: Path) -> list[TrainingExample]:
             record: Any = json.loads(line)
             if not isinstance(record, dict):
                 raise ValueError(f"Training row {line_number} must be a JSON object.")
+            if record.get("reviewed") is not True:
+                raise ValueError(
+                    f"Training row {line_number} must have reviewed=true after "
+                    "a human has checked the example."
+                )
+
+            raw_messages = record.get("messages")
+            if raw_messages is not None:
+                if not isinstance(raw_messages, list) or not raw_messages:
+                    raise ValueError(
+                        f"Training row {line_number} has invalid messages."
+                    )
+                messages = []
+                for message in raw_messages:
+                    if (
+                        not isinstance(message, dict)
+                        or message.get("role")
+                        not in {"system", "user", "assistant"}
+                        or not isinstance(message.get("content"), str)
+                        or not message["content"].strip()
+                    ):
+                        raise ValueError(
+                            f"Training row {line_number} messages must contain "
+                            "non-empty system, user, or assistant content."
+                        )
+                    messages.append(
+                        {
+                            "role": message["role"],
+                            "content": message["content"].strip(),
+                        }
+                    )
+                if messages[-1]["role"] != "assistant" or not any(
+                    message["role"] == "user" for message in messages[:-1]
+                ):
+                    raise ValueError(
+                        f"Training row {line_number} must end with an assistant "
+                        "answer after a user message."
+                    )
+                examples.append(TrainingExample(messages))
+                continue
+
             prompt = record.get("prompt") or record.get("instruction")
-            response = record.get("response") or record.get("output")
+            response = (
+                record.get("response")
+                or record.get("output")
+                or record.get("completion")
+                or record.get("answer")
+            )
             context = record.get("input") or record.get("context")
-            if context:
-                prompt = f"{prompt}\n\nContext:\n{context}"
+            prompt = prompt or record.get("question")
             if not isinstance(prompt, str) or not prompt.strip():
                 raise ValueError(f"Training row {line_number} has no prompt.")
             if not isinstance(response, str) or not response.strip():
                 raise ValueError(f"Training row {line_number} has no response.")
-            examples.append(TrainingExample(prompt.strip(), response.strip()))
+            if context:
+                prompt = f"{prompt}\n\nContext:\n{context}"
+            examples.append(
+                TrainingExample(
+                    [
+                        {"role": "user", "content": prompt.strip()},
+                        {"role": "assistant", "content": response.strip()},
+                    ]
+                )
+            )
     if len(examples) < 4:
         raise ValueError(
             "Fine-tuning requires at least four curated JSONL examples."
@@ -71,23 +124,25 @@ def _train(
 
         def __getitem__(self, index: int) -> dict[str, list[int]]:
             example = examples[index]
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "Answer dietary questions cautiously. Follow the requested "
-                        "output format and never invent evidence."
-                    ),
-                },
-                {"role": "user", "content": example.prompt},
-            ]
+            messages = list(example.messages)
+            if messages[0]["role"] != "system":
+                messages.insert(
+                    0,
+                    {
+                        "role": "system",
+                        "content": (
+                            "Answer dietary questions cautiously. Follow the "
+                            "requested output format and never invent evidence."
+                        ),
+                    },
+                )
             prefix = tokenizer.apply_chat_template(
-                messages,
+                messages[:-1],
                 add_generation_prompt=True,
                 tokenize=True,
             )
             complete = tokenizer.apply_chat_template(
-                [*messages, {"role": "assistant", "content": example.response}],
+                messages,
                 add_generation_prompt=False,
                 tokenize=True,
             )
@@ -159,6 +214,17 @@ def _train(
     trainer.train()
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
+    (output_dir / "curated_training_manifest.json").write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "human_reviewed_examples": len(examples),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def main() -> None:

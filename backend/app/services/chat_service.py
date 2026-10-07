@@ -17,23 +17,18 @@ from app.services.generation import (
 from app.services.query_processor import process_query
 from app.services.retrieval import compress_evidence, rerank_evidence, retrieve_evidence
 
+'''
+process the user's question through the complete RAG pipeline
 
-def _recent_context(db: Session, session: ChatSession) -> str:
-    recent_messages = db.scalars(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session.id)
-        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
-        .limit(6)
-    ).all()
-    if not recent_messages:
-        return session.summary
-    lines = [
-        f"{message.role}: {message.content[:320]}"
-        for message in reversed(recent_messages)
-    ]
-    return "\n".join(lines)[-1400:]
-
-
+Pipeline:
+1. Load the user's dietary profile
+2. process the question and identify the constrains
+3. retrieve the relevant knowledge
+4. filter the non-compatible food recommendation
+5.reeank and compress the evidence
+6. generate the answer using the local LLM
+7. verify the generated claims againts the evidence
+'''
 def _safe_refusal(constraints: ConstraintResult) -> VerifiedAnswer:
     warnings = list(constraints.warnings)
     warnings.append(
@@ -47,7 +42,6 @@ def _safe_refusal(constraints: ConstraintResult) -> VerifiedAnswer:
             "advice."
         ),
         citations=[],
-        confidence=0.0,
         warnings=warnings,
         supported_claims=0,
         rejected_claims=0,
@@ -61,16 +55,23 @@ def create_chat_response(
     session: ChatSession,
     message: str,
 ) -> ChatResponse:
+    #load the dietary profile so that the preferences and allergies
+    #can be considered when processign the question
     profile = db.scalar(
         select(UserProfile).where(UserProfile.user_id == user.id)
     )
-    conversation_summary = _recent_context(db, session)
+    # Analyse the question to determine:
+    # - the user's intent
+    # - dietary restrictions
+    # - allergies
+    # - whether structured nutrition data is needed
+    # - whether guideline/document evidence is needed
+    # - whether the user is requesting a recommendation
     plan = process_query(
         message,
         dietary_preference=profile.dietary_preference if profile else None,
         allergies=profile.allergies if profile else None,
         activity_level=profile.activity_level if profile else None,
-        conversation_summary=conversation_summary,
     )
     if plan.intent == "out_of_scope":
         return ChatResponse(
@@ -81,11 +82,13 @@ def create_chat_response(
                 "dietary and nutrition questions."
             ),
             citations=[],
-            confidence=0.0,
             warnings=[],
             intent=plan.intent,
         )
     try:
+        # Retrieve candidate evidence using the query plan.
+        # The retrieval stage combines lexical BM25 search with
+        # dense vector search from Qdrant.
         retrieved = retrieve_evidence(db, plan)
     except (OSError, RuntimeError, ValueError) as error:
         raise HTTPException(
@@ -95,16 +98,34 @@ def create_chat_response(
                 "Verify ingestion, model cache files, and the embedding settings."
             ),
         ) from error
+
+    # Apply deterministic dietary and allergy constraints before
+    # sending evidence to the LLM.
+    #
+    # The LLM should not be responsible for deciding whether a food
+    # violates an allergy or dietary restriction.
     constrained = enforce_constraints(retrieved, plan)
 
     if (
         plan.recommendation_requested
-        and (plan.constraints.diets or plan.constraints.allergens)
+        and (
+            plan.constraints.diets
+            or plan.constraints.allergens
+            or plan.constraints.unknown_dietary_constraint
+            or plan.constraints.unknown_allergen_constraint
+        )
         and not any(item.kind == "food" for item in constrained.allowed)
     ):
         verified = _safe_refusal(constrained)
     elif not constrained.allowed:
         verified = _safe_refusal(constrained)
+    elif plan.structured_lookup:
+        verified = generate_verified_answer(
+            message,
+            plan,
+            constrained.allowed,
+            constrained,
+        )
     else:
         rerank_query = message
         if plan.constraints.diets or plan.constraints.allergens:
@@ -113,6 +134,9 @@ def create_chat_response(
                 + ", ".join((*plan.constraints.diets, *plan.constraints.allergens))
             )
         try:
+            # Rerank the retrieved candidates using a CrossEncoder model.
+            # This gives the system a second-stage relevance score after
+            # the initial BM25 and dense retrieval.
             reranked = rerank_evidence(rerank_query, constrained.allowed)
         except (OSError, RuntimeError, ValueError) as error:
             raise HTTPException(
@@ -124,19 +148,21 @@ def create_chat_response(
             ) from error
         compressed = compress_evidence(rerank_query, reranked)
         try:
+            # Generate an answer using only the retrieved evidence.
+            # The generation service also validates the model's claims
+            # against the evidence before returning the final response.
             verified = generate_verified_answer(
                 message,
                 plan,
                 compressed,
                 constrained,
-                conversation_summary=conversation_summary,
             )
         except ModelOutputError as error:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=str(error),
             ) from error
-        except (OSError, RuntimeError) as error:
+        except (OSError, RuntimeError, ValueError) as error:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=(
@@ -149,7 +175,6 @@ def create_chat_response(
         session_id=session.id,
         answer=verified.answer,
         citations=verified.citations,
-        confidence=verified.confidence,
         warnings=verified.warnings,
         intent=plan.intent,
     )
@@ -168,7 +193,6 @@ def save_chat_turn(
             content=response.answer,
             citations=[citation.model_dump() for citation in response.citations],
             warnings=response.warnings,
-            confidence=response.confidence,
         )
     )
     db.flush()

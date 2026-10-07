@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 from app.services.evidence import Evidence
 from app.services.query_processor import ALLERGEN_ALIASES, QueryPlan
@@ -71,26 +72,52 @@ def _allergen_conflict(evidence: Evidence, allergen: str) -> bool:
     )
 
 
-def _diet_conflict(evidence: Evidence, diet: str) -> bool:
-    labels = evidence.metadata.get("dietary_labels")
-    if isinstance(labels, list):
-        normalized = {str(label).casefold() for label in labels}
-        if diet in normalized or (diet == "vegetarian" and "vegan" in normalized):
-            return False
-        return True
+DietStatus = Literal["supported", "conflict", "unknown"]
 
+
+def _diet_status(evidence: Evidence, diet: str) -> DietStatus:
+    labels = evidence.metadata.get("dietary_labels")
+    normalized_labels = (
+        {
+            re.sub(r"[_-]+", " ", str(label).casefold()).strip()
+            for label in labels
+            if str(label).strip()
+        }
+        if isinstance(labels, list)
+        else set()
+    )
+
+    explicit_negative = any(
+        label in {
+            f"non {diet}",
+            f"not {diet}",
+            f"not suitable for {diet}",
+        }
+        or f"not suitable for {diet}" in label
+        for label in normalized_labels
+    )
     text = " ".join(
-        (
-            str(evidence.metadata.get("name", "")),
-            str(evidence.metadata.get("category", "")),
-            str(evidence.metadata.get("ingredients", "")),
-            evidence.text,
-        )
+        str(evidence.metadata.get(field, ""))
+        for field in ("name", "category", "ingredients")
     ).casefold()
-    return any(
+    if explicit_negative or any(
         _contains_term(text, term)
         for term in DIET_CONFLICT_TERMS.get(diet, ())
-    )
+    ):
+        return "conflict"
+
+    supported_labels = {diet}
+    if diet == "vegetarian":
+        supported_labels.add("vegan")
+    if any(
+        label in supported_labels
+        or label in {f"{diet}-friendly", f"{diet} friendly"}
+        or label == f"suitable for {diet}"
+        for label in normalized_labels
+    ):
+        return "supported"
+
+    return "unknown"
 
 
 def enforce_constraints(
@@ -103,11 +130,31 @@ def enforce_constraints(
     allowed: list[Evidence] = []
     excluded: list[Evidence] = []
     warnings: list[str] = []
+    if plan.constraints.unknown_allergen_constraint:
+        warnings.append(
+            "An allergy or intolerance could not be identified reliably, so no "
+            "food recommendation can be verified against it."
+        )
+    if plan.constraints.unknown_dietary_constraint:
+        warnings.append(
+            "A dietary restriction could not be identified reliably, so no food "
+            "recommendation can be verified against it."
+        )
     unknown_allergen_data = False
     unknown_diet_data = False
 
     for evidence in evidence_items:
         conflict = False
+        unknown_status = False
+        if (
+            evidence.kind == "food"
+            and (
+                plan.constraints.unknown_allergen_constraint
+                or plan.constraints.unknown_dietary_constraint
+            )
+        ):
+            excluded.append(evidence)
+            continue
         if evidence.kind == "food":
             for allergen in plan.constraints.allergens:
                 if _allergen_conflict(evidence, allergen):
@@ -118,17 +165,25 @@ def enforce_constraints(
 
             if not conflict:
                 for diet in plan.constraints.diets:
-                    if _diet_conflict(evidence, diet):
+                    status = _diet_status(evidence, diet)
+                    if status == "conflict":
                         conflict = True
                         break
-                    if evidence.metadata.get("dietary_data_verified") is not True:
+                    if (
+                        status == "unknown"
+                        or evidence.metadata.get("dietary_data_verified") is not True
+                    ):
+                        unknown_status = True
                         unknown_diet_data = True
 
         if conflict:
             excluded.append(evidence)
         elif evidence.kind == "food" and (
-            (plan.constraints.allergens and evidence.metadata.get("allergen_data_verified") is not True)
-            or (plan.constraints.diets and evidence.metadata.get("dietary_data_verified") is not True)
+            unknown_status
+            or (
+                plan.constraints.allergens
+                and evidence.metadata.get("allergen_data_verified") is not True
+            )
         ):
             excluded.append(evidence)
         else:
@@ -141,8 +196,8 @@ def enforce_constraints(
         )
     if unknown_diet_data:
         warnings.append(
-            "The nutrition dataset does not verify halal or kosher status for every "
-            "food, so foods with unknown status were not recommended."
+            "The nutrition dataset does not verify the requested dietary status "
+            "for every food, so foods with unknown status were not recommended."
         )
     if excluded:
         warnings.append(

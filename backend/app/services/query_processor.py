@@ -10,17 +10,65 @@ DIET_ALIASES = {
     "pescatarian": ("pescatarian",),
 }
 
+UNSUPPORTED_DIET_TERMS = (
+    "carnivore",
+    "whole 30",
+    "whole30",
+    "fodmap",
+    "low-fat",
+    "low fat",
+    "low-sodium",
+    "low sodium",
+    "mediterranean",
+    "dash",
+    "paleo",
+    "keto",
+    "ketogenic",
+    "low-carb",
+    "low carb",
+)
+
 ALLERGEN_ALIASES = {
-    "peanut": ("peanut", "peanuts"),
-    "tree nuts": ("tree nut", "tree nuts", "almond", "cashew", "walnut"),
-    "milk": ("milk", "dairy", "lactose"),
+    "peanut": ("peanut", "peanuts", "groundnut", "groundnuts"),
+    "tree nuts": (
+        "tree nut",
+        "tree nuts",
+        "nuts",
+        "almond",
+        "almonds",
+        "cashew",
+        "cashews",
+        "walnut",
+        "walnuts",
+        "pistachio",
+        "pistachios",
+        "pecan",
+        "pecans",
+        "hazelnut",
+        "hazelnuts",
+    ),
+    "milk": ("milk", "dairy", "lactose", "casein", "whey"),
     "egg": ("egg", "eggs"),
-    "soy": ("soy", "soya"),
+    "soy": ("soy", "soya", "soybean", "soybeans"),
     "wheat": ("wheat",),
-    "gluten": ("gluten",),
-    "sesame": ("sesame",),
-    "fish": ("fish",),
-    "shellfish": ("shellfish", "prawn", "shrimp", "crab", "lobster"),
+    "gluten": ("gluten", "celiac", "coeliac"),
+    "sesame": ("sesame", "sesame seed", "sesame seeds"),
+    "fish": ("fish", "salmon", "tuna", "cod", "anchovy", "anchovies"),
+    "shellfish": (
+        "shellfish",
+        "prawn",
+        "prawns",
+        "shrimp",
+        "crab",
+        "lobster",
+        "crayfish",
+        "mollusc",
+        "molluscs",
+        "mussel",
+        "mussels",
+        "oyster",
+        "oysters",
+    ),
 }
 
 EXPANSIONS = {
@@ -35,6 +83,7 @@ EXPANSIONS = {
 NUTRIENT_TERMS = {
     "calorie",
     "calories",
+    "kcal",
     "energy",
     "protein",
     "carbohydrate",
@@ -46,7 +95,6 @@ NUTRIENT_TERMS = {
     "sodium",
     "potassium",
     "glycemic",
-    "nutrition",
 }
 
 GUIDELINE_TERMS = {
@@ -76,6 +124,8 @@ class QueryConstraints:
     diets: tuple[str, ...]
     allergens: tuple[str, ...]
     activity_level: str | None
+    unknown_dietary_constraint: bool = False
+    unknown_allergen_constraint: bool = False
 
 
 @dataclass(frozen=True)
@@ -96,12 +146,96 @@ def _normalise(value: str) -> str:
 
 def _extract_diets(text: str) -> tuple[str, ...]:
     normalized = _normalise(text)
-    matches = [
-        diet
-        for diet, aliases in DIET_ALIASES.items()
-        if any(re.search(rf"\b{re.escape(alias)}\b", normalized) for alias in aliases)
-    ]
+    matches: list[str] = []
+    for diet, aliases in DIET_ALIASES.items():
+        for alias in aliases:
+            for occurrence in re.finditer(rf"\b{re.escape(alias)}\b", normalized):
+                prefix = normalized[max(0, occurrence.start() - 35) : occurrence.start()]
+                if re.search(
+                    r"\b(?:not|never|no\s+longer|don't\s+follow|do\s+not\s+follow)"
+                    r"\s+(?:a\s+)?$",
+                    prefix,
+                ):
+                    continue
+                matches.append(diet)
+                break
+            if diet in matches:
+                break
     return tuple(dict.fromkeys(matches))
+
+
+def _has_unknown_constraint(
+    text: str,
+    known_aliases: dict[str, tuple[str, ...]],
+    *,
+    profile_value: bool,
+) -> bool:
+    normalized = _normalise(text)
+    if not normalized or normalized in {
+        "none",
+        "no",
+        "n a",
+        "na",
+        "no preference",
+        "no restrictions",
+        "omnivore",
+        "omnivorous",
+        "no known allergies",
+        "no known food allergies",
+    }:
+        return False
+
+    has_constraint_context = bool(
+        re.search(
+            r"\b(?:allerg\w*|intoleran\w*|anaphyl\w*|dietary\s+"
+            r"(?:restriction|requirement|preference)|keto\w*|paleo|"
+            r"low[\s-]?(?:carb|fat|sodium)|carnivore|whole[\s-]?30|"
+            r"fodmap|mediterranean|dash|diabet\w*|celiac|coeliac|"
+            r"hypertension|high\s+blood\s+pressure|renal\s+disease|"
+            r"kidney\s+disease)\b",
+            normalized,
+        )
+    )
+    residue = normalized
+    if not profile_value:
+        residue = re.sub(
+            r"\b(?:not|never)\s+(?:be\s+)?(?:allergic|intolerant)\s+to\s+"
+            r"[a-z][a-z-]*(?:\s+[a-z][a-z-]*){0,2}",
+            " ",
+            residue,
+        )
+        residue = re.sub(
+            r"\b(?:do\s+not|don't|dont)\s+have\s+(?:a\s+)?"
+            r"[a-z][a-z-]*\s+(?:allerg(?:y|ies)|intoleran\w*)\b",
+            " ",
+            residue,
+        )
+    for aliases in known_aliases.values():
+        for alias in sorted(aliases, key=len, reverse=True):
+            residue = re.sub(rf"\b{re.escape(alias)}\b", " ", residue)
+    residue = re.sub(
+        r"\b(?:i|am|a|an|have|has|the|to|and|or|with|my|eat|follow|"
+        r"prefer|preference|diet|dietary|allerg(?:y|ies|ic)|intoleran\w*|"
+        r"severe|mild|food|foods|known|none|no|not|do|don't|dont|is|of|for|"
+        r"free|based|plant|what|can|should|eat|with|any|that|safe|safely|"
+        r"my|your|you|have|recommend|recommendation|recommendations|"
+        r"which|this|those|these|me|please|tell|about|contain|contains|"
+        r"high|low|protein|calories|meal|meals|options|am|are|do|does|"
+        r"want|looking|following|follow|for|on|all|allergy|allergies|"
+        r"disease)\b",
+        " ",
+        residue,
+    )
+    residue = re.sub(r"[^a-z0-9]+", " ", residue).strip()
+    if not residue:
+        if not has_constraint_context:
+            return False
+        return not any(
+            re.search(rf"\b{re.escape(alias)}\b", normalized)
+            for aliases in known_aliases.values()
+            for alias in aliases
+        )
+    return profile_value or has_constraint_context
 
 
 def _extract_allergens(text: str) -> tuple[str, ...]:
@@ -111,16 +245,32 @@ def _extract_allergens(text: str) -> tuple[str, ...]:
         found = False
         for alias in aliases:
             alias_pattern = re.escape(alias)
-            if not re.search(rf"\b{alias_pattern}\b", normalized):
-                continue
-            if re.search(
-                rf"\b(?:not\s+allergic\s+to|no\s+allerg(?:y|ies)\s+to)\s+"
-                rf"{alias_pattern}\b",
+            for occurrence in re.finditer(
+                rf"\b{alias_pattern}\b",
                 normalized,
             ):
-                continue
-            found = True
-            break
+                start, end = occurrence.span()
+                context = normalized[max(0, start - 70) : min(len(normalized), end + 30)]
+                escaped_alias = re.escape(alias)
+                negative_patterns = (
+                    rf"\b(?:not|never)\s+(?:be\s+)?(?:allergic|intolerant)"
+                    rf"\s+(?:to\s+)?{escaped_alias}\b",
+                    rf"\b(?:no|without)\s+(?:known\s+)?allerg(?:y|ies)"
+                    rf"\s+(?:to\s+)?{escaped_alias}\b",
+                    rf"\b(?:no|without)\s+{escaped_alias}\s+"
+                    rf"(?:allerg(?:y|ies)|intoleran\w*)\b",
+                    rf"\b(?:do\s+not|don't|dont)\s+have\s+(?:a\s+)?"
+                    rf"{escaped_alias}\s+(?:allerg(?:y|ies)|intoleran\w*)\b",
+                )
+                if any(
+                    re.search(pattern, context)
+                    for pattern in negative_patterns
+                ):
+                    continue
+                found = True
+                break
+            if found:
+                break
         if found and allergen not in matches:
             matches.append(allergen)
     return tuple(matches)
@@ -158,7 +308,6 @@ def process_query(
     dietary_preference: str | None = None,
     allergies: str | None = None,
     activity_level: str | None = None,
-    conversation_summary: str = "",
 ) -> QueryPlan:
     normalized = _normalise(message)
     command_line = COMMAND_LINE_PREFIX.match(message) is not None
@@ -168,9 +317,34 @@ def process_query(
     profile_allergens = _extract_allergens(allergies or "")
     explicit_allergens = _extract_allergens(message)
     allergens = tuple(dict.fromkeys((*profile_allergens, *explicit_allergens)))
+    unknown_allergen_constraint = _has_unknown_constraint(
+        allergies or "",
+        ALLERGEN_ALIASES,
+        profile_value=True,
+    ) or _has_unknown_constraint(
+        message,
+        ALLERGEN_ALIASES,
+        profile_value=False,
+    )
+    unknown_dietary_constraint = _has_unknown_constraint(
+        dietary_preference or "",
+        DIET_ALIASES,
+        profile_value=True,
+    ) or _has_unknown_constraint(
+        message,
+        DIET_ALIASES,
+        profile_value=False,
+    )
 
     tokens = {token.strip(".,?!:;") for token in normalized.split()}
-    structured_lookup = bool(NUTRIENT_TERMS.intersection(tokens))
+    structured_lookup = bool(
+        NUTRIENT_TERMS.intersection(tokens)
+        or re.search(
+            r"\bnutrition\s+(?:information|values|facts)\b",
+            normalized,
+        )
+        or re.search(r"\b(?:serving|portion)\s+size\b", normalized)
+    )
     document_lookup = bool(
         GUIDELINE_TERMS.intersection(tokens)
     )
@@ -178,12 +352,14 @@ def process_query(
         re.search(
             r"\b(?:recommendations?\s+for\s+me|what should i eat|"
             r"what can i eat|meal ideas|food options|foods can i eat|"
-            r"recommend\s+(?:a\s+|some\s+)?"
+            r"recommend\s+(?:(?:a\s+few|some|a)\s+)?"
             r"(?:foods?|meals?|lunch|dinner|breakfast|snacks?)|"
-            r"suggest\s+(?:foods?|meals?|a lunch|a dinner|snacks?)|"
-            r"could i consider|what.{0,40}\b(?:foods?|meals?|lunch|dinner|"
-            r"breakfast|snacks?)|which.{0,40}\b(?:foods?|meals?|lunch|dinner|"
-            r"breakfast|snacks?))\b",
+            r"suggest\s+(?:(?:a\s+few|some|a)\s+)?"
+            r"(?:foods?|meals?|lunch|dinner|breakfast|snacks?)|"
+            r"could i consider|(?:what|which)\b.{0,40}\b"
+            r"(?:foods?|meals?|lunch|dinner|breakfast|snacks?)\b"
+            r".{0,30}\b(?:can|should|could|would)\s+i\s+"
+            r"(?:eat|consider|choose|have))\b",
             normalized,
         )
     )
@@ -202,8 +378,7 @@ def process_query(
         intent = "general_dietary_question"
 
     personalized = bool(diets or allergens or recommendation_requested)
-    query_context = " ".join(part for part in (conversation_summary, message) if part)
-    queries = _expand_query(query_context)
+    queries = _expand_query(message)
     subquestions = _decompose(message)
 
     return QueryPlan(
@@ -214,6 +389,8 @@ def process_query(
             diets=diets,
             allergens=allergens,
             activity_level=activity_level,
+            unknown_dietary_constraint=unknown_dietary_constraint,
+            unknown_allergen_constraint=unknown_allergen_constraint,
         ),
         personalized=personalized,
         recommendation_requested=recommendation_requested,

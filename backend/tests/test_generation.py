@@ -59,7 +59,6 @@ def test_empty_evidence_returns_safe_refusal_without_loading_model() -> None:
         ConstraintResult(allowed=[], excluded=[], warnings=[]),
     )
 
-    assert result.confidence == 0
     assert not result.citations
     assert "not have enough verified evidence" in result.answer
 
@@ -98,3 +97,121 @@ def test_structured_food_lookup_returns_requested_recorded_nutrient(
     assert "190 kcal" not in result.answer
     assert [citation.evidence_id for citation in result.citations] == ["food-1"]
     assert result.warnings
+
+
+def test_serving_size_lookup_chooses_exact_food_and_skips_model(
+    monkeypatch,
+) -> None:
+    apple = Evidence(
+        evidence_id="food-apple",
+        text="Food: Apple\nServing: 1 medium apple\nCalories: 95 kcal",
+        source_id=1,
+        source_title="Nutrition record",
+        source_url=None,
+        source_type="user_uploaded_json",
+        authority_score=0.7,
+        kind="food",
+        metadata={"name": "Apple"},
+    )
+    green_banana = Evidence(
+        evidence_id="food-green-banana",
+        text="Food: Green Banana\nServing: 1 small banana\nCalories: 90 kcal",
+        source_id=1,
+        source_title="Nutrition record",
+        source_url=None,
+        source_type="user_uploaded_json",
+        authority_score=0.7,
+        kind="food",
+        metadata={"name": "Green Banana"},
+    )
+    banana = Evidence(
+        evidence_id="food-banana",
+        text="Food: Banana\nServing: 1 medium banana (118 g)\nCalories: 105 kcal",
+        source_id=1,
+        source_title="Nutrition record",
+        source_url=None,
+        source_type="user_uploaded_json",
+        authority_score=0.7,
+        kind="food",
+        metadata={"name": "Banana"},
+    )
+
+    def unexpected_model_call(_prompt: str):
+        raise AssertionError("Structured lookup must not call the LLM.")
+
+    monkeypatch.setattr("app.services.generation._generate", unexpected_model_call)
+    question = "What is the serving size of banana?"
+    result = generate_verified_answer(
+        question,
+        process_query(question),
+        [apple, green_banana, banana],
+        ConstraintResult(allowed=[apple, green_banana, banana], excluded=[], warnings=[]),
+    )
+
+    assert "Banana: Serving: 1 medium banana (118 g)." in result.answer
+    assert [citation.evidence_id for citation in result.citations] == ["food-banana"]
+
+
+def test_structured_lookup_does_not_fall_back_to_llm_for_unmatched_food(
+    monkeypatch,
+) -> None:
+    evidence = Evidence(
+        evidence_id="food-apple",
+        text="Food: Apple\nServing: 1 medium apple\nSodium: 2 mg",
+        source_id=1,
+        source_title="Nutrition record",
+        source_url=None,
+        source_type="user_uploaded_json",
+        authority_score=0.7,
+        kind="food",
+        metadata={"name": "Apple"},
+    )
+
+    def unexpected_model_call(_prompt: str):
+        raise AssertionError("Unmatched structured queries must not call the LLM.")
+
+    monkeypatch.setattr("app.services.generation._generate", unexpected_model_call)
+    question = "What is the sodium content of fried chicken?"
+    result = generate_verified_answer(
+        question,
+        process_query(question),
+        [evidence],
+        ConstraintResult(allowed=[evidence], excluded=[], warnings=[]),
+    )
+
+    assert "exact nutrition record" in result.answer
+    assert result.citations == []
+
+
+def test_structured_lookup_returns_the_requested_chicken_sodium_value(
+    monkeypatch,
+) -> None:
+    evidence = Evidence(
+        evidence_id="food-chicken",
+        text=(
+            "Food: Fried Chicken\nServing: 1 piece (100 g)\n"
+            "Sodium: 620 mg\nProtein: 21 g"
+        ),
+        source_id=1,
+        source_title="Nutrition record",
+        source_url=None,
+        source_type="user_uploaded_json",
+        authority_score=0.7,
+        kind="food",
+        metadata={"name": "Fried Chicken"},
+    )
+
+    def unexpected_model_call(_prompt: str):
+        raise AssertionError("Structured lookup must not call the LLM.")
+
+    monkeypatch.setattr("app.services.generation._generate", unexpected_model_call)
+    question = "What is the sodium content of fried chicken?"
+    result = generate_verified_answer(
+        question,
+        process_query(question),
+        [evidence],
+        ConstraintResult(allowed=[evidence], excluded=[], warnings=[]),
+    )
+
+    assert "Fried Chicken: Sodium: 620 mg" in result.answer
+    assert "Protein" not in result.answer

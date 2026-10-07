@@ -1,0 +1,100 @@
+{"question":"How many calories are in nasi lemak?","expected_intent":"structured_lookup"}
+{"question":"What is the protein amount in tempeh?","expected_intent":"structured_lookup"}
+{"question":"Tell me the sodium in this serving of soup.","expected_intent":"structured_lookup"}
+{"question":"How much fibre does one guava contain?","expected_intent":"structured_lookup"}
+{"question":"What is the sugar content of teh tarik?","expected_intent":"structured_lookup"}
+{"question":"How much fat is in a boiled egg?","expected_intent":"structured_lookup"}
+{"question":"Give me the carbohydrate value for brown rice.","expected_intent":"structured_lookup"}
+{"question":"How much potassium is in spinach?","expected_intent":"structured_lookup"}
+{"question":"What is the energy value listed for one roti canai?","expected_intent":"structured_lookup"}
+{"question":"Show the nutrition information for plain yogurt.","expected_intent":"structured_lookup"}
+{"question":"How many kcal are in a banana?","expected_intent":"structured_lookup"}
+{"question":"What is the protein per 100 g for tofu?","expected_intent":"structured_lookup"}
+{"question":"List the calories and fat for a serving of dhal.","expected_intent":"structured_lookup"}
+{"question":"How much sugar is listed for Milo?","expected_intent":"structured_lookup"}
+{"question":"What is the glycemic index recorded for sweet potato?","expected_intent":"structured_lookup"}
+{"question":"Tell me the fibre and carbohydrate values in oats.","expected_intent":"structured_lookup"}
+{"question":"How much sodium does canned tuna contain?","expected_intent":"structured_lookup"}
+{"question":"What are the calories in one apple?","expected_intent":"structured_lookup"}
+{"question":"Give the potassium and protein amounts for lentils.","expected_intent":"structured_lookup"}
+{"question":"What nutrition values are recorded for chicken breast?","expected_intent":"structured_lookup"}
+{"question":"Why do public health guidelines encourage varied meals?","expected_intent":"document_evidence"}
+{"question":"Explain the dietary guidelines for a healthy plate.","expected_intent":"document_evidence"}
+{"question":"What recommendations do official guidelines make about meal planning?","expected_intent":"document_evidence"}
+{"question":"What does the research say about eating a variety of foods?","expected_intent":"document_evidence"}
+{"question":"Show me evidence about the benefits of regular meals.","expected_intent":"document_evidence"}
+{"question":"Why is it useful to follow national dietary guidance?","expected_intent":"document_evidence"}
+{"question":"Explain the health effects of skipping meals.","expected_intent":"document_evidence"}
+{"question":"What are the official recommendations for food portions?","expected_intent":"document_evidence"}
+{"question":"Why do nutrition guidelines discuss food groups?","expected_intent":"document_evidence"}
+{"question":"What evidence supports eating more whole foods?","expected_intent":"document_evidence"}
+{"question":"Explain the recommendations on drinking water with meals.","expected_intent":"document_evidence"}
+{"question":"Why do dietary guidelines suggest limiting processed foods?","expected_intent":"document_evidence"}
+{"question":"What does current research say about meal timing?","expected_intent":"document_evidence"}
+{"question":"Can you explain the guidance for planning a balanced plate?","expected_intent":"document_evidence"}
+{"question":"What recommendations are given for food safety at home?","expected_intent":"document_evidence"}
+{"question":"Why should people consult trusted dietary guidance?","expected_intent":"document_evidence"}
+{"question":"What evidence is available about eating breakfast?","expected_intent":"document_evidence"}
+{"question":"Explain the health effects of a varied eating pattern.","expected_intent":"document_evidence"}
+{"question":"What do Malaysian dietary guidelines say about meal variety?","expected_intent":"document_evidence"}
+{"question":"Why are official food recommendations updated over time?","expected_intent":"document_evidence"}
+{"question":"What can I eat if I am vegetarian?","expected_intent":"personalized_recommendation"}
+{"question":"Recommend some foods for my vegan diet.","expected_intent":"personalized_recommendation"}
+{"question":"What should I eat for lunch today?","expected_intent":"personalized_recommendation"}
+{"question":"Suggest meals for someone who avoids dairy.","expected_intent":"personalized_recommendation"}
+{"question":"Which foods can I eat with a peanut allergy?","expected_intent":"personalized_recommendation"}
+{"question":"Give me meal ideas that fit my halal preference.","expected_intent":"personalized_recommendation"}
+{"question":"What foods can I eat if I have celiac disease?","expected_intent":"personalized_recommendation"}
+{"question":"Recommend a dinner for a pescatarian.","expected_intent":"personalized_recommendation"}
+{"question":"What snacks can I eat while avoiding eggs?","expected_intent":"personalized_recommendation"}
+{"question":"Suggest foods for my kosher diet.","expected_intent":"personalized_recommendation"}
+{"question":"What meals should I consider if I am vegan?","expected_intent":"personalized_recommendation"}
+{"question":"Could I consider any foods that avoid shellfish?","expected_intent":"personalized_recommendation"}
+{"question":"Which breakfast options can I eat as a vegetarian?","expected_intent":"personalized_recommendation"}
+{"question":"Recommend foods for me that avoid soy.","expected_intent":"personalized_recommendation"}
+{"question":"What dinner foods can I eat with a wheat allergy?","expected_intent":"personalized_recommendation"}
+{"question":"Suggest a few meals for my dietary preferences.","expected_intent":"personalized_recommendation"}
+{"question":"What food options can I eat if I avoid fish?","expected_intent":"personalized_recommendation"}
+{"question":"Recommend some snacks that suit my vegan diet.","expected_intent":"personalized_recommendation"}
+{"question":"What can I eat for breakfast if I am pescatarian?","expected_intent":"personalized_recommendation"}
+{"question":"Which meals could I consider with my dietary restrictions?","expected_intent":"personalized_recommendation"}
+{"question":"Explain the guidelines for daily protein intake.","expected_intent":"hybrid_question"}
+{"question":"What recommendations are there for reducing sodium intake?","expected_intent":"hybrid_question"}
+{"question":"Why do dietary guidelines discuss fibre intake?","expected_intent":"hybrid_question"}
+{"question":"What does research say about the health effects of sugar intake?","expected_intent":"hybrid_question"}
+{"question":"Explain the evidence behind guidance on carbohydrate intake.","expected_intent":"hybrid_question"}
+{"question":"What are the recommendations about fat intake in official guidelines?","expected_intent":"hybrid_question"}
+{"question":"Why do recommendations discuss potassium intake?","expected_intent":"hybrid_question"}
+{"question":"What evidence supports guidance about energy intake?","expected_intent":"hybrid_question"}
+{"question":"Explain the dietary guidelines related to glycemic index.","expected_intent":"hybrid_question"}
+{"question":"What research discusses protein and meal planning recommendations?","expected_intent":"hybrid_question"}
+{"question":"Why do official recommendations mention fibre and food groups?","expected_intent":"hybrid_question"}
+{"question":"What do guidelines say about sodium and blood pressure?","expected_intent":"hybrid_question"}
+{"question":"Explain the evidence on sugar and dietary recommendations.","expected_intent":"hybrid_question"}
+{"question":"What are the official guidelines for fat and carbohydrate intake?","expected_intent":"hybrid_question"}
+{"question":"Why does research examine protein intake in different age groups?","expected_intent":"hybrid_question"}
+{"question":"What recommendations address potassium in a balanced diet?","expected_intent":"hybrid_question"}
+{"question":"Explain official guidance on energy and meal portions.","expected_intent":"hybrid_question"}
+{"question":"What does the evidence say about fibre and digestive health?","expected_intent":"hybrid_question"}
+{"question":"Why do guidelines cover glycemic index and food choices?","expected_intent":"hybrid_question"}
+{"question":"What recommendations discuss nutrition and healthy eating patterns?","expected_intent":"document_evidence"}
+{"question":"What is a balanced diet?","expected_intent":"general_dietary_question"}
+{"question":"How does digestion work?","expected_intent":"general_dietary_question"}
+{"question":"What are food groups?","expected_intent":"general_dietary_question"}
+{"question":"How can I read a product label?","expected_intent":"general_dietary_question"}
+{"question":"What does portion size mean?","expected_intent":"general_dietary_question"}
+{"question":"How should leftovers be stored safely?","expected_intent":"general_dietary_question"}
+{"question":"What is meal planning?","expected_intent":"general_dietary_question"}
+{"question":"How does the body use food?","expected_intent":"general_dietary_question"}
+{"question":"What is the difference between a snack and a meal?","expected_intent":"general_dietary_question"}
+{"question":"How do I understand an ingredient list?","expected_intent":"general_dietary_question"}
+{"question":"What is mindful eating?","expected_intent":"general_dietary_question"}
+{"question":"How does food spoil?","expected_intent":"general_dietary_question"}
+{"question":"What does a varied eating pattern mean?","expected_intent":"general_dietary_question"}
+{"question":"How are foods categorized?","expected_intent":"general_dietary_question"}
+{"question":"What is the purpose of a food diary?","expected_intent":"general_dietary_question"}
+{"question":"How can I compare two packaged products?","expected_intent":"general_dietary_question"}
+{"question":"What is the role of breakfast in a daily routine?","expected_intent":"general_dietary_question"}
+{"question":"How can cooking methods change a dish?","expected_intent":"general_dietary_question"}
+{"question":"What does minimally processed food mean?","expected_intent":"general_dietary_question"}
+{"question":"How are traditional dishes usually served?","expected_intent":"general_dietary_question"}

@@ -31,7 +31,6 @@ class ChatResponse(BaseModel):
     session_id: int
     answer: str
     citations: list[ChatCitation]
-    confidence: float
     warnings: list[str]
     intent: str
 
@@ -42,7 +41,6 @@ class ChatMessageResponse(BaseModel):
     content: str
     citations: list[ChatCitation]
     warnings: list[str] = Field(default_factory=list)
-    confidence: float | None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
