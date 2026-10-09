@@ -90,17 +90,38 @@ def replace_source_vectors(source_id: int, evidence: list[Evidence]) -> None:
     )
 
 
-def search_dense(query: str, limit: int) -> list[tuple[Evidence, float]]:
+def search_dense(
+    query: str,
+    limit: int,
+    *,
+    kind: str | None = None,
+) -> list[tuple[Evidence, float]]:
     client = get_vector_client()
     if not client.collection_exists(COLLECTION_NAME):
         return []
     vector = embed_texts([query])[0]
-    result = client.query_points(
-        collection_name=COLLECTION_NAME,
-        query=vector,
-        limit=limit,
-        with_payload=True,
-    )
+    if kind is None:
+        result = client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=vector,
+            limit=limit,
+            with_payload=True,
+        )
+    else:
+        result = client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=vector,
+            limit=limit,
+            with_payload=True,
+            query_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="kind",
+                        match=models.MatchValue(value=kind),
+                    )
+                ]
+            ),
+        )
     matches: list[tuple[Evidence, float]] = []
     for point in result.points:
         if point.payload is not None:
