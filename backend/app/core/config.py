@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     embedding_model_id: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     reranker_model_id: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     llm_model_id: str = "Qwen/Qwen2.5-0.5B-Instruct"
+    llm_offline: bool = False
     llm_adapter_path: Path = BASE_DIR / "backend" / "models" / "dietary-assistant"
     qdrant_path: Path = BASE_DIR / "backend" / "data" / "qdrant"
     model_cache_path: Path = BASE_DIR / "model-cache"

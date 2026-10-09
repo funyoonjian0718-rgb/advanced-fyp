@@ -11,9 +11,91 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
 from app.models.knowledge import DocumentChunk, FoodNutrition
+from app.services.constraints import NumericConstraint, enforce_constraints
 from app.services.evidence import Evidence, chunk_evidence, food_evidence
 from app.services.query_processor import NUTRIENT_TERMS, QueryPlan
 from app.services.vector_store import search_dense
+
+
+NUMERIC_COLUMNS = {
+    "calories": FoodNutrition.calories,
+    "protein_g": FoodNutrition.protein_g,
+    "carbohydrates_g": FoodNutrition.carbohydrates_g,
+    "fat_g": FoodNutrition.fat_g,
+    "fiber_g": FoodNutrition.fiber_g,
+    "sugar_g": FoodNutrition.sugar_g,
+    "sodium_mg": FoodNutrition.sodium_mg,
+    "potassium_mg": FoodNutrition.potassium_mg,
+    "glycemic_index": FoodNutrition.glycemic_index,
+}
+
+
+def _numeric_filtered_foods(
+    db: Session,
+    constraints: tuple[NumericConstraint, ...],
+    limit: int,
+    *,
+    plan: QueryPlan | None = None,
+) -> list[Evidence]:
+    conditions = []
+    for constraint in constraints:
+        column = NUMERIC_COLUMNS.get(constraint.field)
+        if column is None:
+            raise ValueError(
+                f"Unsupported numeric nutrition field: {constraint.field}"
+            )
+
+        if constraint.operator == "<":
+            conditions.append(column < constraint.value)
+        elif constraint.operator == "<=":
+            conditions.append(column <= constraint.value)
+        elif constraint.operator == ">":
+            conditions.append(column > constraint.value)
+        elif constraint.operator == ">=":
+            conditions.append(column >= constraint.value)
+        elif constraint.operator == "=":
+            conditions.append(column == constraint.value)
+        else:
+            raise ValueError(
+                f"Unsupported numeric comparison operator: "
+                f"{constraint.operator}"
+            )
+
+    statement = (
+        select(FoodNutrition)
+        .options(joinedload(FoodNutrition.source))
+        .where(*conditions)
+        .order_by(FoodNutrition.id)
+    )
+    has_profile_constraints = plan is not None and bool(
+        plan.constraints.diets
+        or plan.constraints.allergens
+        or plan.constraints.unknown_dietary_constraint
+        or plan.constraints.unknown_allergen_constraint
+    )
+    if not has_profile_constraints:
+        foods = db.scalars(statement.limit(limit)).all()
+        return [food_evidence(food) for food in foods]
+
+    compatible: list[Evidence] = []
+    incompatible: list[Evidence] = []
+    offset = 0
+    while len(compatible) < limit:
+        foods = db.scalars(
+            statement.limit(limit).offset(offset)
+        ).all()
+        if not foods:
+            break
+        offset += len(foods)
+        candidates = [food_evidence(food) for food in foods]
+        constrained = enforce_constraints(candidates, plan)
+        compatible.extend(constrained.allowed)
+        if len(incompatible) < limit:
+            incompatible.extend(
+                constrained.excluded[: limit - len(incompatible)]
+            )
+    compatible = compatible[:limit]
+    return [*compatible, *incompatible[: max(limit - len(compatible), 0)]]
 
 
 def _tokens(text: str) -> list[str]:
@@ -122,6 +204,8 @@ def _bm25_rank(
     query: str,
     retrieval_index: _RetrievalIndex,
     limit: int,
+    *,
+    kind: str | None = None,
 ) -> list[tuple[Evidence, float]]:
     if not retrieval_index.corpus or retrieval_index.bm25 is None:
         return []
@@ -130,12 +214,42 @@ def _bm25_rank(
         range(len(scores)),
         key=lambda corpus_index: scores[corpus_index],
         reverse=True,
-    )[:limit]
-    return [
-        (retrieval_index.corpus[corpus_index], float(scores[corpus_index]))
-        for corpus_index in ranked_indices
-        if scores[corpus_index] > 0
-    ]
+    )
+    ranked: list[tuple[Evidence, float]] = []
+    for corpus_index in ranked_indices:
+        item = retrieval_index.corpus[corpus_index]
+        if scores[corpus_index] <= 0 or (kind and item.kind != kind):
+            continue
+        ranked.append((item, float(scores[corpus_index])))
+        if len(ranked) == limit:
+            break
+    return ranked
+
+
+def _reciprocal_rank_fusion(
+    rankings: list[list[tuple[Evidence, float]]],
+    *,
+    rank_constant: int = 60,
+) -> list[Evidence]:
+    fused: dict[str, Evidence] = {}
+    fused_scores: dict[str, float] = defaultdict(float)
+    for ranking in rankings:
+        for rank, (item, raw_score) in enumerate(ranking, start=1):
+            fused_item = fused.get(item.evidence_id)
+            if fused_item is None:
+                fused_item = replace(
+                    item,
+                    metadata=copy.deepcopy(item.metadata),
+                )
+                fused[item.evidence_id] = fused_item
+            fused_scores[item.evidence_id] += 1 / (rank_constant + rank)
+            fused_item.retrieval_score = max(fused_item.retrieval_score, raw_score)
+            fused_item.rrf_score = fused_scores[item.evidence_id]
+
+    return sorted(
+        fused.values(),
+        key=lambda item: (-item.rrf_score, item.evidence_id),
+    )
 
 
 def _direct_food_matches(query: str, corpus: list[Evidence]) -> list[Evidence]:
@@ -163,7 +277,6 @@ def _direct_food_matches(query: str, corpus: list[Evidence]) -> list[Evidence]:
         replace(
             item,
             metadata=copy.deepcopy(item.metadata),
-            retrieval_score=1.0,
         )
         for _, _, _, _, item in ranked
     ]
@@ -175,49 +288,84 @@ def retrieve_evidence(
     *,
     candidate_limit: int = 30,
 ) -> list[Evidence]:
+    if plan.constraints.numeric_constraints:
+        foods = _numeric_filtered_foods(
+            db,
+            plan.constraints.numeric_constraints,
+            candidate_limit,
+            plan=plan,
+        )
+        if not plan.document_lookup and plan.intent != "document_evidence":
+            return foods
+        documents = _retrieve_ranked_evidence(
+            db,
+            plan,
+            candidate_limit=candidate_limit,
+            evidence_kind="document",
+        )
+        combined: list[Evidence] = []
+        for index in range(max(len(foods), len(documents))):
+            if index < len(foods):
+                combined.append(foods[index])
+            if index < len(documents):
+                combined.append(documents[index])
+            if len(combined) >= candidate_limit:
+                break
+        return combined
+
+    return _retrieve_ranked_evidence(
+        db,
+        plan,
+        candidate_limit=candidate_limit,
+    )
+
+
+def _retrieve_ranked_evidence(
+    db: Session,
+    plan: QueryPlan,
+    *,
+    candidate_limit: int,
+    evidence_kind: str | None = None,
+) -> list[Evidence]:
     index = _load_retrieval_index(db.get_bind())
-    if not index.corpus:
-        return []
 
     bm25_rankings: list[list[tuple[Evidence, float]]] = []
     dense_rankings: list[list[tuple[Evidence, float]]] = []
     query_set = tuple(dict.fromkeys((*plan.queries, *plan.subquestions)))
 
     for query in query_set:
-        bm25_rankings.append(_bm25_rank(query, index, candidate_limit))
-        dense_rankings.append(search_dense(query, candidate_limit))
-
-    fused: dict[str, Evidence] = {}
-    fused_scores: dict[str, float] = defaultdict(float)
-    for rankings in (bm25_rankings, dense_rankings):
-        for ranked in rankings:
-            for rank, (item, raw_score) in enumerate(ranked, start=1):
-                request_item = fused.get(item.evidence_id)
-                if request_item is None:
-                    request_item = replace(
-                        item,
-                        metadata=copy.deepcopy(item.metadata),
-                    )
-                    fused[item.evidence_id] = request_item
-                authority_multiplier = 0.5 + item.authority_score * 0.5
-                fused_scores[item.evidence_id] += (
-                    authority_multiplier / (60 + rank)
+        bm25_rankings.append(
+            _bm25_rank(
+                query,
+                index,
+                candidate_limit,
+                kind=evidence_kind,
+            )
+        )
+        if evidence_kind is None:
+            dense_rankings.append(search_dense(query, candidate_limit))
+        else:
+            dense_rankings.append(
+                search_dense(
+                    query,
+                    candidate_limit,
+                    kind=evidence_kind,
                 )
-                request_item.retrieval_score = max(
-                    request_item.retrieval_score,
-                    raw_score,
-                )
+            )
 
-    ordered = sorted(
-        fused.values(),
-        key=lambda item: fused_scores[item.evidence_id],
-        reverse=True,
+    ordered = _reciprocal_rank_fusion(
+        [*bm25_rankings, *dense_rankings]
     )
-    if plan.intent == "structured_lookup":
+    if evidence_kind is not None:
+        ordered = [item for item in ordered if item.kind == evidence_kind]
+    elif plan.intent == "structured_lookup":
         ordered = [item for item in ordered if item.kind == "food"]
     elif plan.intent == "document_evidence":
         ordered = [item for item in ordered if item.kind == "document"]
-    if plan.intent == "structured_lookup":
+    if evidence_kind is None and plan.intent in {
+        "structured_lookup",
+        "comparison",
+    }:
         direct_matches = _direct_food_matches(plan.queries[0], list(index.corpus))
         direct_ids = {item.evidence_id for item in direct_matches}
         ordered = direct_matches + [
@@ -250,8 +398,7 @@ def rerank_evidence(
         item.reranker_score = float(score)
     return sorted(
         evidence_items,
-        key=lambda item: item.reranker_score + 0.2 * item.authority_score,
-        reverse=True,
+        key=lambda item: (-item.reranker_score, item.evidence_id),
     )[:limit]
 
 

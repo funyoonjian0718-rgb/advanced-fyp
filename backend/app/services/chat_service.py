@@ -10,6 +10,7 @@ from app.models.user_profile import UserProfile
 from app.schemas.chat import ChatResponse
 from app.services.constraints import ConstraintResult, enforce_constraints
 from app.services.generation import (
+    EvidenceVerificationError,
     ModelOutputError,
     VerifiedAnswer,
     generate_verified_answer,
@@ -31,16 +32,42 @@ Pipeline:
 '''
 def _safe_refusal(constraints: ConstraintResult) -> VerifiedAnswer:
     warnings = list(constraints.warnings)
-    warnings.append(
-        "The available knowledge base did not contain enough compatible evidence "
-        "to support a recommendation."
-    )
-    return VerifiedAnswer(
-        answer=(
+    if constraints.has_known_conflict and (
+        constraints.allergen_status_unknown or constraints.dietary_status_unknown
+    ):
+        answer = (
+            "I can't recommend the retrieved foods: some conflict with your "
+            "dietary or allergen restrictions, and the compatibility of others "
+            "could not be verified from the available records."
+        )
+    elif constraints.has_known_conflict:
+        answer = (
+            "I can't recommend the retrieved foods because they conflict with "
+            "your dietary or allergen restrictions."
+        )
+    elif constraints.allergen_status_unknown:
+        answer = (
+            "I can't verify that the retrieved foods are safe for your allergy "
+            "because their allergen information is missing or unclear. Please "
+            "check the food label or consult a qualified dietitian."
+        )
+    elif constraints.dietary_status_unknown:
+        answer = (
+            "I can't verify that the retrieved foods meet your dietary "
+            "requirements from the available records."
+        )
+    else:
+        answer = (
             "I do not have enough verified evidence to answer that safely. "
             "Please consult a qualified health professional for personal medical "
             "advice."
-        ),
+        )
+        warnings.append(
+            "The available knowledge base did not contain enough compatible "
+            "evidence to support a recommendation."
+        )
+    return VerifiedAnswer(
+        answer=answer,
         citations=[],
         warnings=warnings,
         supported_claims=0,
@@ -90,7 +117,12 @@ def create_chat_response(
         # The retrieval stage combines lexical BM25 search with
         # dense vector search from Qdrant.
         retrieved = retrieve_evidence(db, plan)
-    except (OSError, RuntimeError, ValueError) as error:
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(error),
+        ) from error
+    except (OSError, RuntimeError) as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
@@ -106,7 +138,23 @@ def create_chat_response(
     # violates an allergy or dietary restriction.
     constrained = enforce_constraints(retrieved, plan)
 
+    has_numeric_food_matches = any(item.kind == "food" for item in retrieved)
     if (
+        plan.constraints.numeric_constraints
+        and not has_numeric_food_matches
+        and not plan.document_lookup
+    ):
+        verified = VerifiedAnswer(
+            answer=(
+                "No foods in the available dataset match the requested "
+                "nutrition conditions."
+            ),
+            citations=[],
+            warnings=[],
+            supported_claims=0,
+            rejected_claims=0,
+        )
+    elif (
         plan.recommendation_requested
         and (
             plan.constraints.diets
@@ -119,7 +167,7 @@ def create_chat_response(
         verified = _safe_refusal(constrained)
     elif not constrained.allowed:
         verified = _safe_refusal(constrained)
-    elif plan.structured_lookup:
+    elif plan.structured_lookup and not plan.constraints.numeric_constraints:
         verified = generate_verified_answer(
             message,
             plan,
@@ -138,7 +186,7 @@ def create_chat_response(
             # This gives the system a second-stage relevance score after
             # the initial BM25 and dense retrieval.
             reranked = rerank_evidence(rerank_query, constrained.allowed)
-        except (OSError, RuntimeError, ValueError) as error:
+        except (ImportError, OSError, RuntimeError, ValueError) as error:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=(
@@ -162,6 +210,11 @@ def create_chat_response(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=str(error),
             ) from error
+        except EvidenceVerificationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(error),
+            ) from error
         except (OSError, RuntimeError, ValueError) as error:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -173,7 +226,15 @@ def create_chat_response(
 
     return ChatResponse(
         session_id=session.id,
-        answer=verified.answer,
+        answer=(
+            "No foods in the available dataset match the requested nutrition "
+            "conditions. "
+            + verified.answer
+            if plan.constraints.numeric_constraints
+            and not has_numeric_food_matches
+            and plan.document_lookup
+            else verified.answer
+        ),
         citations=verified.citations,
         warnings=verified.warnings,
         intent=plan.intent,

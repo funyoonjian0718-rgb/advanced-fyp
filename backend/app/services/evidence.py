@@ -22,6 +22,7 @@ class Evidence:
     kind: str
     metadata: dict[str, object] = field(default_factory=dict)
     retrieval_score: float = 0.0
+    rrf_score: float = 0.0
     reranker_score: float = 0.0
 
     @property
@@ -94,14 +95,19 @@ def food_evidence(food: FoodNutrition) -> Evidence:
         kind="food",
         metadata={
             "food_id": food.id,
+            "source_record_id": food.source_record_id,
             "name": food.name,
             "aliases": food.aliases or "",
             "category": food.category or "",
             "allergens": food.allergens,
             "dietary_labels": food.dietary_labels,
             "ingredients": food.ingredients,
-            "allergen_data_verified": food.allergens is not None,
-            "dietary_data_verified": food.dietary_labels is not None,
+            "allergen_data_populated": food.allergens is not None,
+            "dietary_data_populated": food.dietary_labels is not None,
+            "allergen_data_reviewed": False,
+            "dietary_data_reviewed": False,
+            "allergen_data_verified": False,
+            "dietary_data_verified": False,
         },
     )
 
@@ -137,6 +143,14 @@ def evidence_to_payload(evidence: Evidence) -> dict[str, object]:
 
 def evidence_from_payload(payload: dict[str, object]) -> Evidence:
     metadata = payload.get("metadata")
+    safe_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    for data_type in ("allergen", "dietary"):
+        reviewed_key = f"{data_type}_data_reviewed"
+        verified_key = f"{data_type}_data_verified"
+        safe_metadata[verified_key] = (
+            safe_metadata.get(reviewed_key) is True
+            and safe_metadata.get(verified_key) is True
+        )
     return Evidence(
         evidence_id=str(payload["evidence_id"]),
         text=str(payload["text"]),
@@ -150,5 +164,5 @@ def evidence_from_payload(payload: dict[str, object]) -> Evidence:
         source_type=str(payload["source_type"]),
         authority_score=float(payload["authority_score"]),
         kind=str(payload["kind"]),
-        metadata=metadata if isinstance(metadata, dict) else {},
+        metadata=safe_metadata,
     )

@@ -24,6 +24,52 @@ selected for modest local GPU memory. `LLM_MODEL_ID`,
 `backend\models\dietary-assistant`.
 An existing adapter without a `curated_training_manifest.json` is deliberately
 not loaded; retrain from a human-reviewed dataset to activate a LoRA adapter.
+Set `LLM_OFFLINE=true` to require cached model files during normal loading.
+The opt-in raw-generation smoke test always enables offline mode and does not
+run claim verification:
+
+```powershell
+python -m app.scripts.smoke_test_local_model
+```
+
+Run it from `backend` with the backend virtual environment active. It loads the
+configured model and reports generation status without printing generated
+content.
+
+## Answer-quality evaluation
+
+The source-grounded answer-quality cases are separate from retrieval-ranking
+labels in `tests\data\answer_quality_eval.jsonl`. Run the offline dataset and
+metric smoke checks from `backend`:
+
+```powershell
+.\.venv\Scripts\python.exe -m app.scripts.evaluate_answer_quality
+```
+
+This validates every food/chunk reference against the processed knowledge-base
+files and runs all cases through the chat API with deterministic mocked model
+claims. It reports fixture-path metrics to verify the API and verifier wiring;
+these are not model-quality scores. To explicitly evaluate final verified chat
+API responses with the configured cached model, use:
+
+```powershell
+$env:LLM_OFFLINE = "true"
+$env:HF_HUB_OFFLINE = "1"
+$env:TRANSFORMERS_OFFLINE = "1"
+.\.venv\Scripts\python.exe -m app.scripts.evaluate_answer_quality --real-model
+```
+
+Use `--case-id <dataset-id>` to isolate a case. Non-200 API responses remain in
+`case_results` with `actual_outcome: "request_failed"` and sanitized HTTP
+details; they count as incorrect outcomes and the evaluator exits nonzero.
+
+The real-model mode uses a temporary SQLite database and controlled evidence
+loaded from the processed food CSV and multichunk JSONL. It runs the chat API
+and existing claim verifier, does not access PostgreSQL or Qdrant, and refuses
+to fetch uncached model files. Citation support, numeric correctness, and
+unsupported-claim counts are automated through the existing verifier.
+Guideline paraphrase entailment and allergy safety still require human review;
+the safety flag is a conservative heuristic, not a medical safety assessment.
 
 ## Database, ingestion, and API
 
@@ -120,6 +166,18 @@ when asking a follow-up so facts from an earlier food cannot leak into the
 answer. Structured food lookups use an exact food-name match and return
 recorded values directly without calling the language model.
 
+RRF uses the reciprocal-rank contribution `1 / (60 + rank)` and deduplicates
+evidence by stable evidence ID. `retrieval_score` stores the highest raw BM25
+or dense-retrieval score; `rrf_score` stores the fused reciprocal-rank score.
+The cross-encoder determines the final candidate order; if reranking or
+verification fails, the API returns an error instead of falling back to an
+unverified draft. Nutrition claim checks bind reported values to a named food
+and its own nutrient fields. Guideline claims are retained only when they
+exactly match a sentence in a cited document and are attributed to that source.
+Citations are drawn only from evidence that supports retained claims. The
+current response schema has a flat citation list, so it cannot expose
+claim-to-citation associations directly.
+
 ## Dataset safety and provenance
 
 Imported `source_type` values affect the stored authority score. Generated
@@ -127,11 +185,16 @@ estimates and generated variants receive low authority. User-uploaded records
 are not treated as verified simply because they have a source URL. Review
 dataset facts against authoritative sources before relying on them.
 
-The supplied nutrition dataset has no verified allergen or dietary-compatibility
-columns. For a personalized recommendation with allergy or diet constraints,
-foods without explicit verified declarations are excluded. If no compatible
-record remains, the API refuses to recommend a specific food instead of
-assuming that missing data means safe.
+The nutrition database stores allergen and dietary-label values but has no
+review-status or provenance fields for those values. Populated fields are
+therefore not treated as reviewed: `*_data_populated` indicates presence while
+`*_data_verified` remains false for database-derived food evidence. A reviewed
+attestation must be explicit in the evidence metadata; old vector payloads that
+only contain the former populated-as-verified flags are treated as unverified.
+For a personalized recommendation with allergy or diet constraints, records
+without verified declarations are excluded. If no compatible record remains,
+the API refuses to recommend a specific food instead of assuming that missing
+or unreviewed data means safe.
 
 ## Fine-tuning the local model
 
@@ -174,3 +237,31 @@ python -m app.scripts.evaluate_query_intents
 The report includes overall and per-intent accuracy, a confusion summary, and
 the misclassified questions. Update the evaluation labels manually as the
 baseline improves; the benchmark does not replace the rule-based processor.
+
+Compare BM25-only, dense-only, RRF-fused, and reranked retrieval against the
+stable evidence labels in the Malaysian question set:
+
+```powershell
+python -m app.scripts.evaluate_retrieval --top-k 8 --candidate-limit 30
+```
+
+This retrieval evaluation requires the configured PostgreSQL database, imported
+food and document evidence, the local Qdrant collection, and the configured
+embedding and reranker models. BM25-only and dense-only comparisons omit
+numeric-filter cases because neither applies the same SQL constraints. Their
+single-stage baselines use the primary query; RRF uses the full query set and
+subquestions. Safety and insufficient-evidence cases without positive
+retrieval labels are listed as skipped. The benchmark reports retrieval
+metrics only; it does not measure generation faithfulness or citation accuracy.
+
+The evaluator deduplicates retrieved evidence keys before ranking metrics.
+`relevant_evidence_keys` gives binary relevance; optional `relevance_grades`
+maps each relevant key to a grade from 1 to 3 and uses gain `2^grade - 1` for
+nDCG. Precision@K uses K as its denominator, Recall@K uses all unique relevant
+labels for the query, MRR uses the first relevant rank in the full ranking, and
+nDCG@K normalizes against the sorted relevance grades truncated at K. Macro
+metrics are unweighted averages of per-query scores; category scores are
+unweighted averages of their per-query scores. Food labels must use the
+`source_record_id` identity emitted by the evaluator. Manually verify existing
+`food:1` and `food:2` labels against the imported food records before
+interpreting comparison-case scores.

@@ -1,3 +1,8 @@
+from app.services.constraints import (
+    NumericConstraint,
+    QueryConstraints,
+    extract_numeric_constraints,
+)
 from app.services.query_processor import process_query
 
 
@@ -113,6 +118,16 @@ def test_known_allergy_in_question_does_not_become_an_unknown_constraint() -> No
     assert plan.constraints.unknown_allergen_constraint is False
 
 
+def test_known_allergy_in_conditional_question_is_not_marked_unknown() -> None:
+    plan = process_query(
+        "Which foods can I eat if I have a peanut allergy?"
+    )
+
+    assert plan.constraints.allergens == ("peanut",)
+    assert plan.constraints.unknown_allergen_constraint is False
+    assert plan.constraints.unknown_dietary_constraint is False
+
+
 def test_celiac_is_treated_as_a_gluten_constraint() -> None:
     plan = process_query("What can I eat? I have celiac disease.")
 
@@ -141,3 +156,154 @@ def test_terminal_command_is_routed_outside_dietary_retrieval() -> None:
     assert plan.intent == "out_of_scope"
     assert plan.structured_lookup is False
     assert plan.document_lookup is False
+
+def test_comparison_question_is_classified_as_comparison() -> None:
+    plan = process_query(
+        "Which has more protein, tofu salad bowl or tempeh salad bowl?"
+    )
+
+    assert plan.intent == "comparison"
+
+
+def test_compare_question_is_classified_as_comparison() -> None:
+    plan = process_query(
+        "Compare grilled chicken brown rice bowl and grilled chicken white rice bowl."
+    )
+
+    assert plan.intent == "comparison"
+
+
+def test_better_between_question_is_classified_as_comparison() -> None:
+    plan = process_query(
+        "Which food is better for blood sugar control between grilled chicken "
+        "brown rice bowl and grilled chicken white rice bowl?"
+    )
+
+    assert plan.intent == "comparison"
+
+
+def test_constraint_question_is_classified_as_constrained_search() -> None:
+    plan = process_query(
+        "Find foods that have less than 300 calories and at least 10g of protein."
+    )
+
+    assert plan.intent == "constrained_search"
+
+
+def test_calorie_constraint_is_classified_as_constrained_search() -> None:
+    plan = process_query(
+        "Which foods have fewer than 500 calories?"
+    )
+
+    assert plan.intent == "constrained_search"
+
+
+def test_categorical_constraint_is_classified_as_constrained_search() -> None:
+    plan = process_query(
+        "Which foods have fewer than 500 calories and are not marked Limit for diabetes?"
+    )
+
+    assert plan.intent == "constrained_search"
+
+
+def test_high_fiber_question_is_classified_as_semantic_search() -> None:
+    plan = process_query(
+        "Which foods are relatively high in fiber?"
+    )
+
+    assert plan.intent == "semantic_search"
+
+
+def test_protein_source_question_is_classified_as_semantic_search() -> None:
+    plan = process_query(
+        "What is a good source of protein from the foods available?"
+    )
+
+    assert plan.intent == "semantic_search"
+
+
+def test_lower_calorie_food_question_is_classified_as_semantic_search() -> None:
+    plan = process_query(
+        "Which Malaysian foods have lower calories?"
+    )
+
+    assert plan.intent == "semantic_search"
+
+
+def test_exact_protein_question_remains_structured_lookup() -> None:
+    plan = process_query(
+        "How much protein is in tofu?"
+    )
+
+    assert plan.intent == "structured_lookup"
+
+
+def test_exact_calorie_question_remains_structured_lookup() -> None:
+    plan = process_query(
+        "How many calories are in a medium banana?"
+    )
+
+    assert plan.intent == "structured_lookup"
+
+def test_guideline_question_about_updates_remains_document_evidence() -> None:
+    plan = process_query(
+        "Why are official food recommendations updated over time?"
+    )
+
+    assert plan.intent == "document_evidence"
+
+
+def test_portion_size_definition_is_general_question() -> None:
+    plan = process_query(
+        "What does portion size mean?"
+    )
+
+    assert plan.intent == "general_dietary_question"
+
+
+def test_snack_and_meal_difference_is_general_question() -> None:
+    plan = process_query(
+        "What is the difference between a snack and a meal?"
+    )
+
+    assert plan.intent == "general_dietary_question"
+
+
+def test_how_to_compare_products_is_general_question() -> None:
+    plan = process_query(
+        "How can I compare two packaged products?"
+    )
+
+    assert plan.intent == "general_dietary_question"
+
+def test_process_query_extracts_numeric_constraints():
+    plan = process_query(
+        "Find foods that have less than 300 calories and at least 10g protein"
+    )
+
+    assert plan.intent == "constrained_search"
+
+    assert len(plan.constraints.numeric_constraints) == 2
+
+    assert plan.constraints.numeric_constraints[0].field == "calories"
+    assert plan.constraints.numeric_constraints[0].operator == "<"
+    assert plan.constraints.numeric_constraints[0].value == 300
+
+    assert plan.constraints.numeric_constraints[1].field == "protein_g"
+    assert plan.constraints.numeric_constraints[1].operator == ">="
+    assert plan.constraints.numeric_constraints[1].value == 10
+
+
+def test_query_plan_uses_canonical_constraint_types_and_tuple_values() -> None:
+    extracted = extract_numeric_constraints(
+        "Find foods with less than 300 calories and at least 10g protein"
+    )
+    plan = process_query(
+        "Find foods with less than 300 calories and at least 10g protein"
+    )
+
+    assert isinstance(plan.constraints, QueryConstraints)
+    assert isinstance(plan.constraints.numeric_constraints, tuple)
+    assert isinstance(extracted, tuple)
+    assert all(isinstance(item, NumericConstraint) for item in extracted)
+    assert plan.constraints.numeric_constraints == extracted

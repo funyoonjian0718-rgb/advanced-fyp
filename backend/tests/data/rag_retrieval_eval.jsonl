@@ -1,0 +1,16 @@
+{"category":"exact_nutrition_lookup","question":"How many calories are in Nasi Lemak?","relevant_evidence_keys":["food:1"],"baseline_comparable":true,"answerable":true}
+{"category":"keyword_sensitive","question":"What does the Mamak guideline recommend for drinks?","relevant_evidence_keys":["chunk:2288"],"baseline_comparable":true,"answerable":true}
+{"category":"semantic_dietary","question":"Which Malaysian fruit choices are suggested for a lower-glycemic diet?","relevant_evidence_keys":["chunk:2277"],"baseline_comparable":true,"answerable":true}
+{"category":"food_comparison","question":"Compare the calories in Nasi Lemak and Nasi Goreng Kampung.","relevant_evidence_keys":["food:1","food:2"],"baseline_comparable":true,"answerable":true}
+{"category":"numeric_constraints","question":"Find foods with less than 200 calories and at least 20 g protein.","relevant_evidence_keys":["food:262","food:356","food:359","food:369","food:371","food:372","food:375","food:377","food:379","food:468","food:590","food:591"],"baseline_comparable":false,"answerable":true}
+{"category":"dietary_allergen_safety","question":"Which foods can I eat if I have a peanut allergy?","relevant_evidence_keys":[],"baseline_comparable":false,"answerable":false}
+{"category":"guideline_based","question":"What does the Malaysian diabetes plate method recommend?","relevant_evidence_keys":["chunk:2273"],"baseline_comparable":true,"answerable":true}
+{"category":"insufficient_evidence","question":"What is the exact vitamin B12 content of moon dust?","relevant_evidence_keys":[],"baseline_comparable":false,"answerable":false}
+{"category":"exact_nutrition_lookup","question":"What is the recorded calorie value for Nasi Lemak?","relevant_evidence_keys":["food:1"],"baseline_comparable":true,"answerable":true}
+{"category":"exact_nutrition_lookup","question":"How much energy does the Nasi Lemak record list?","relevant_evidence_keys":["food:1"],"baseline_comparable":true,"answerable":true}
+{"category":"food_comparison","question":"Which has more calories, Nasi Lemak or Nasi Goreng Kampung?","relevant_evidence_keys":["food:1","food:2"],"baseline_comparable":true,"answerable":true}
+{"category":"keyword_sensitive","question":"What guidance does the Mamak source give about drinks?","relevant_evidence_keys":["chunk:2288"],"baseline_comparable":true,"answerable":true}
+{"category":"guideline_based","question":"How does the Malaysian healthy plate guide describe a balanced meal?","relevant_evidence_keys":["chunk:2273"],"baseline_comparable":true,"answerable":true}
+{"category":"semantic_dietary","question":"Which local fruits are suggested for a lower-glycemic diet?","relevant_evidence_keys":["chunk:2277"],"baseline_comparable":true,"answerable":true}
+{"category":"guideline_based","question":"What does the Malaysian diabetes plate method say about meal balance?","relevant_evidence_keys":["chunk:2273"],"baseline_comparable":true,"answerable":true}
+{"category":"keyword_sensitive","question":"According to the Mamak guidance, what drink choices are discussed?","relevant_evidence_keys":["chunk:2288"],"baseline_comparable":true,"answerable":true}
