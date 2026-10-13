@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { isAxiosError } from "axios";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import {
     getProfile,
@@ -68,6 +69,9 @@ function profileToForm(profile: UserProfile): ProfileForm {
 }
 
 function Profile() {
+    const location = useLocation();
+    const navigate = useNavigate();
+    const onboarding = Boolean((location.state as { onboarding?: boolean } | null)?.onboarding);
     const [form, setForm] = useState<ProfileForm>(emptyForm);
     const [error, setError] = useState("");
     const [saved, setSaved] = useState(false);
@@ -105,6 +109,26 @@ function Profile() {
         event.preventDefault();
         setError("");
         setSaved(false);
+
+        if (onboarding) {
+            if (!form.full_name.trim()) {
+                setError("Please enter your full name to continue.");
+                return;
+            }
+            if (!form.age.trim() || Number(form.age) < 1 || Number(form.age) > 120) {
+                setError("Please enter a valid age between 1 and 120.");
+                return;
+            }
+            if (!form.dietary_preference.trim()) {
+                setError("Please select or enter your dietary preference. If you have none, enter No preference.");
+                return;
+            }
+            if (!form.allergies.trim()) {
+                setError('Please list your food allergies, or enter "None" if you have none.');
+                return;
+            }
+        }
+
         setSaving(true);
 
         const data: UserProfileUpdate = {
@@ -122,6 +146,9 @@ function Profile() {
             const profile = await updateProfile(data);
             setForm(profileToForm(profile));
             setSaved(true);
+            if (onboarding) {
+                navigate("/dashboard", { replace: true, state: { profileCompleted: true } });
+            }
         } catch (saveError: unknown) {
             setError(getErrorMessage(saveError));
         } finally {
@@ -134,9 +161,11 @@ function Profile() {
 
     return (
         <section className="mx-auto max-w-3xl p-6">
-            <h1 className="mb-2 text-2xl font-bold">Profile</h1>
+            <h1 className="mb-2 text-2xl font-bold">{onboarding ? "Set up your dietary profile" : "Profile"}</h1>
             <p className="mb-6 text-gray-600">
-                Update your details to personalize dietary recommendations.
+                {onboarding
+                    ? "Before you start, tell us a little about yourself so the assistant can take your preferences and reported allergies into account. Fields marked * are required. You can update these details later."
+                    : "Update your details to personalize dietary recommendations."}
             </p>
 
             {error && (
@@ -160,7 +189,7 @@ function Profile() {
                 >
                     <div className="sm:col-span-2">
                         <label htmlFor="full_name" className={labelClassName}>
-                            Full name
+                            Full name{onboarding ? " *" : ""}
                         </label>
                         <input
                             id="full_name"
@@ -177,7 +206,7 @@ function Profile() {
 
                     <div>
                         <label htmlFor="age" className={labelClassName}>
-                            Age
+                            Age{onboarding ? " *" : ""}
                         </label>
                         <input
                             id="age"
@@ -278,7 +307,7 @@ function Profile() {
                             htmlFor="dietary_preference"
                             className={labelClassName}
                         >
-                            Dietary preference
+                            Dietary preference{onboarding ? " *" : ""}
                         </label>
                         <input
                             id="dietary_preference"
@@ -307,7 +336,7 @@ function Profile() {
 
                     <div className="sm:col-span-2">
                         <label htmlFor="allergies" className={labelClassName}>
-                            Allergies
+                            Allergies{onboarding ? " *" : ""}
                         </label>
                         <textarea
                             id="allergies"
@@ -319,7 +348,7 @@ function Profile() {
                                 updateField("allergies", event.target.value)
                             }
                             className={inputClassName}
-                            placeholder="List food allergies or intolerances"
+                            placeholder='List food allergies or intolerances, or enter "None"' 
                         />
                     </div>
 
@@ -329,7 +358,7 @@ function Profile() {
                             disabled={saving}
                             className="rounded bg-blue-600 px-5 py-2 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                         >
-                            {saving ? "Saving..." : "Save profile"}
+                            {saving ? "Saving..." : onboarding ? "Save and continue" : "Save profile"}
                         </button>
                     </div>
                 </form>

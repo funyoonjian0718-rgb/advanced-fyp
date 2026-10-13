@@ -159,6 +159,24 @@ def _normalise(value: str) -> str:
     return re.sub(r"\s+", " ", value.casefold()).strip()
 
 
+def _normalise_known_diet_typos(value: str) -> str:
+    """Correct a small allowlist of unambiguous common dietary misspellings.
+
+    This is intentionally not fuzzy matching: unknown diet terms should remain
+    unknown and be handled by the existing clarification/safety logic.
+    """
+    replacements = {
+        r"\bvegeterian\b": "vegetarian",
+        r"\bvegatarian\b": "vegetarian",
+        r"\bvegeterianism\b": "vegetarianism",
+        r"\bvegeterian\b": "vegetarian",
+    }
+    result = value
+    for pattern, correction in replacements.items():
+        result = re.sub(pattern, correction, result, flags=re.IGNORECASE)
+    return result
+
+
 def _extract_diets(text: str) -> tuple[str, ...]:
     normalized = _normalise(text)
     matches: list[str] = []
@@ -385,10 +403,11 @@ def process_query(
     allergies: str | None = None,
     activity_level: str | None = None,
 ) -> QueryPlan:
-    normalized = _normalise(message)
+    parsed_message = _normalise_known_diet_typos(message)
+    normalized = _normalise(parsed_message)
     command_line = COMMAND_LINE_PREFIX.match(message) is not None
     profile_diets = _extract_diets(dietary_preference or "")
-    explicit_diets = _extract_diets(message)
+    explicit_diets = _extract_diets(parsed_message)
     diets = tuple(dict.fromkeys((*profile_diets, *explicit_diets)))
     profile_allergens = _extract_allergens(allergies or "")
     explicit_allergens = _extract_allergens(message)
@@ -399,7 +418,7 @@ def process_query(
         profile_value=True,
         allergen_constraint=True,
     ) or _has_unknown_constraint(
-        message,
+        parsed_message,
         ALLERGEN_ALIASES,
         profile_value=False,
         allergen_constraint=True,
@@ -410,13 +429,13 @@ def process_query(
         profile_value=True,
         allergen_constraint=False,
     ) or _has_unknown_constraint(
-        message,
+        parsed_message,
         DIET_ALIASES,
         profile_value=False,
         allergen_constraint=False,
     )
 
-    numeric_constraints = extract_numeric_constraints(message)
+    numeric_constraints = extract_numeric_constraints(parsed_message)
 
     tokens = {token.strip(".,?!:;") for token in normalized.split()}
     structured_lookup = bool(
@@ -445,7 +464,8 @@ def process_query(
     )
     recommendation_requested = bool(
         re.search(
-            r"\b(?:recommendations?\s+for\s+me|what should i eat|"
+            r"\b(?:meal\s+plans?|one[- ]day\s+(?:meal\s+)?plan|"
+            r"plan\s+(?:my\s+)?meals?|recommendations?\s+for\s+me|what should i eat|"
             r"what can i eat|meal ideas|food options|foods can i eat|"
             r"recommend\s+(?:(?:a\s+few|some|a)\s+)?"
             r"(?:foods?|meals?|lunch|dinner|breakfast|snacks?)|"
@@ -479,8 +499,8 @@ def process_query(
         intent = "general_dietary_question"
 
     personalized = bool(diets or allergens or recommendation_requested)
-    queries = _expand_query(message)
-    subquestions = _decompose(message)
+    queries = _expand_query(parsed_message)
+    subquestions = _decompose(parsed_message)
 
     return QueryPlan(
         intent=intent,

@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models.user import User
+from app.models.user_profile import UserProfile
 from app.schemas.auth import LoginRequest, RegisterRequest, UserResponse
 from app.services.auth_service import create_access_token, hash_password, verify_password
 
@@ -38,6 +39,11 @@ def register(
     )
 
     db.add(user)
+    db.flush()
+
+    # Create an empty profile at registration so every account has a profile
+    # record. The user completes the optional/personal dietary fields later.
+    db.add(UserProfile(user_id=user.id))
     db.commit()
     db.refresh(user)
 

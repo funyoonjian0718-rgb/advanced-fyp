@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { login } from "../services/auth";
+import { getProfile } from "../services/profile";
 
 function Login() {
     // Used to redirect the user to another page after login.
@@ -53,8 +54,27 @@ function Login() {
                 JSON.stringify(response.user)
             );
 
-            // Login was successful, so go to the dashboard.
-            navigate("/dashboard");
+            // Send new or incomplete profiles to onboarding before the dashboard.
+            // If the profile endpoint is temporarily unavailable, keep the user
+            // signed in and let the profile page display the API error.
+            try {
+                const profile = await getProfile();
+                const complete = Boolean(
+                    profile.full_name?.trim() &&
+                    profile.age &&
+                    profile.dietary_preference?.trim() &&
+                    profile.allergies?.trim()
+                );
+                navigate(complete ? "/dashboard" : "/profile", {
+                    replace: true,
+                    state: complete ? undefined : { onboarding: true },
+                });
+            } catch {
+                navigate("/profile", {
+                    replace: true,
+                    state: { onboarding: true },
+                });
+            }
 
         } catch (error: any) {
             // If FastAPI returns an error, display it to the user.
