@@ -1,74 +1,46 @@
 import { NavLink, useNavigate } from "react-router-dom";
-
 import { logout } from "../services/auth";
 
+const navigation = [
+    { to: "/dashboard", label: "Home", icon: "⌂", end: true },
+    { to: "/chat", label: "Ask AI", icon: "✳", end: false },
+    { to: "/history", label: "History", icon: "◷", end: false },
+    { to: "/profile", label: "Profile", icon: "○", end: false },
+];
+
 function Sidebar() {
-    // Allows us to redirect after logout.
     const navigate = useNavigate();
 
-    // This function handles the logout process.
     function handleLogout() {
-        // Remove the JWT and stored user information.
         logout();
-
-        // Send the user back to the login page.
         navigate("/login", { replace: true });
     }
 
     return (
-        <aside className="w-64 min-h-screen bg-gray-900 text-white p-4">
-
-            {/* Application name */}
-            <h1 className="text-xl font-bold mb-8">
-                Advanced FYP
-            </h1>
-
-            {/* Navigation links */}
-            <nav className="space-y-2">
-
-                <NavLink
-                    to="/dashboard"
-                    className="block p-2 rounded hover:bg-gray-800"
-                >
-                    Dashboard
-                </NavLink>
-
-                <NavLink
-                    to="/chat"
-                    className="block p-2 rounded hover:bg-gray-800"
-                >
-                    Dietary Assistant
-                </NavLink>
-
-                <NavLink
-                    to="/history"
-                    className="block p-2 rounded hover:bg-gray-800"
-                >
-                    History
-                </NavLink>
-
-                <NavLink
-                    to="/profile"
-                    className="block p-2 rounded hover:bg-gray-800"
-                >
-                    Profile
-                </NavLink>
-
+        <aside className="app-sidebar" aria-label="Main navigation">
+            <a className="brand" href="/dashboard" onClick={(event) => { event.preventDefault(); navigate("/dashboard"); }}>
+                <span className="brand-mark" aria-hidden="true">✳</span>
+                <span>
+                    <span className="brand-name">NutriGuide</span>
+                    <span className="brand-subtitle" style={{ display: "block" }}>Your dietary companion</span>
+                </span>
+            </a>
+            <div className="sidebar-label">Workspace</div>
+            <nav className="sidebar-nav">
+                {navigation.map((item) => (
+                    <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`}>
+                        <span className="sidebar-icon" aria-hidden="true">{item.icon}</span>
+                        <span>{item.label}</span>
+                    </NavLink>
+                ))}
             </nav>
-
-            {/* 
-                Logout button.
-
-                mt-auto pushes this button toward the
-                bottom when the sidebar uses flex layout.
-            */}
-            <button
-                onClick={handleLogout}
-                className="mt-8 w-full text-left p-2 rounded hover:bg-gray-800"
-            >
-                Logout
-            </button>
-
+            <div className="sidebar-bottom">
+                <div className="sidebar-note">
+                    <strong>Small steps matter 🌱</strong>
+                    <p>Use evidence-based information to support your everyday food choices.</p>
+                </div>
+                <button type="button" onClick={handleLogout} className="sidebar-logout">↪ &nbsp; Sign out</button>
+            </div>
         </aside>
     );
 }

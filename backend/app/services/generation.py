@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -645,6 +646,152 @@ def _structured_lookup_answer(
     )
 
 
+
+MEAL_PLAN_PATTERNS = (
+    r"\bmeal\s+plans?\b",
+    r"\bplan\s+(?:my\s+)?meals?\b",
+    r"\bone[- ]day\s+(?:meal\s+)?plan\b",
+    r"\b(?:breakfast|lunch|dinner)\b.{0,100}\b(?:snack|meal\s+plan|balanced\s+day)\b",
+)
+
+
+def is_meal_plan_request(question: str) -> bool:
+    """Recognise meal-plan requests that should use structured food evidence."""
+    return any(
+        re.search(pattern, question, flags=re.IGNORECASE)
+        for pattern in MEAL_PLAN_PATTERNS
+    )
+
+
+def _record_value(item: Evidence, label: str, unit: str = "") -> str | None:
+    suffix = rf"\s*{re.escape(unit)}" if unit else ""
+    match = re.search(
+        rf"(?im)^\s*{re.escape(label)}:\s*(.+?){suffix}\s*$",
+        item.text,
+    )
+    return match.group(1).strip() if match else None
+
+
+def generate_meal_plan_answer(
+    question: str,
+    evidence_items: list[Evidence],
+    constraints: ConstraintResult,
+) -> VerifiedAnswer:
+    """Compose a transparent sample day from already-filtered food records.
+
+    This path does not ask the LLM to invent a combination or nutrition facts.
+    It must receive evidence after enforce_constraints has run.
+    """
+    foods: list[Evidence] = []
+    seen_names: set[str] = set()
+    for item in evidence_items:
+        if item.kind != "food":
+            continue
+        name = str(item.metadata.get("name", "")).strip()
+        normalized = _normalized_phrase(name)
+        if not name or not normalized or normalized in seen_names:
+            continue
+        seen_names.add(normalized)
+        foods.append(item)
+
+    if not foods:
+        return VerifiedAnswer(
+            answer=(
+                "I couldn't build a meal-plan example because the available "
+                "retrieved evidence did not include usable food records."
+            ),
+            citations=[],
+            warnings=[
+                *constraints.warnings,
+                "No food items were available for a source-grounded meal-plan example.",
+            ],
+            supported_claims=0,
+            rejected_claims=0,
+        )
+
+    # Choose a repeatable but query-conditioned sample instead of always taking
+    # the first four database records. The digest only changes selection order;
+    # it never changes a food name, nutrition value, or evidence citation.
+    # Repeating the exact same question remains stable, while differently worded
+    # requests can produce a different combination from the eligible candidates.
+    normalized_question = _normalized_phrase(question)
+    foods.sort(
+        key=lambda item: hashlib.sha256(
+            f"{normalized_question}|{item.evidence_id}".encode("utf-8")
+        ).hexdigest()
+    )
+
+    # Prefer category variety where category metadata is available, then fill
+    # remaining slots from the remaining eligible records.
+    slots = ("Breakfast", "Lunch", "Dinner", "Snack")
+    selected: list[Evidence] = []
+    deferred: list[Evidence] = []
+    seen_categories: set[str] = set()
+    for item in foods:
+        category = str(item.metadata.get("category") or "").strip().casefold()
+        if category and category not in seen_categories:
+            selected.append(item)
+            seen_categories.add(category)
+        else:
+            deferred.append(item)
+        if len(selected) == len(slots):
+            break
+    if len(selected) < len(slots):
+        selected.extend(deferred[: len(slots) - len(selected)])
+    rendered: list[str] = [
+        "Here is a general sample day arranged from food records in the available "
+        "dataset. This is an illustrative example, not a clinically validated or "
+        "condition-specific meal plan."
+    ]
+    for slot, item in zip(slots, selected):
+        name = str(item.metadata.get("name", "Food item"))
+        serving = _record_value(item, "Serving")
+        nutrition: list[str] = []
+        for label, unit in (
+            ("Calories", "kcal"),
+            ("Protein", "g"),
+            ("Carbohydrates", "g"),
+            ("Fibre", "g"),
+        ):
+            value = _record_value(item, label, unit)
+            if value is not None:
+                nutrition.append(f"{label.lower()}: {value} {unit}".strip())
+        detail_parts = []
+        if serving:
+            detail_parts.append(f"serving: {serving}")
+        if nutrition:
+            detail_parts.append("recorded nutrition: " + ", ".join(nutrition))
+        details = f" ({'; '.join(detail_parts)})" if detail_parts else ""
+        rendered.append(f"{slot}: {name}{details}.")
+
+    warnings = list(constraints.warnings)
+    if len(selected) < len(slots):
+        warnings.append(
+            f"Only {len(selected)} distinct food record(s) were retrieved, so the "
+            "example is incomplete rather than a full four-item day."
+        )
+    if any(item.is_estimate for item in selected):
+        warnings.append(
+            "Some cited nutrition values are dataset estimates and should not be "
+            "treated as authoritative measurements."
+        )
+    if any(item.authority_score < 0.5 for item in selected):
+        warnings.append(
+            "Some cited records have limited source verification; treat the "
+            "information as provisional."
+        )
+    warnings.append(
+        "Meal slots are an illustrative arrangement of retrieved records, not "
+        "evidence that the foods form a nutritionally complete or medically suitable plan."
+    )
+    return VerifiedAnswer(
+        answer="\n\n".join(rendered),
+        citations=[_citation_for(item) for item in selected],
+        warnings=warnings,
+        supported_claims=len(selected),
+        rejected_claims=0,
+    )
+
 def _claim_is_in_numeric_scope(
     claim: GeneratedClaim,
     plan: QueryPlan,
@@ -669,6 +816,88 @@ def _claim_is_in_numeric_scope(
         if values
     }
     return bool(claim_fields) and claim_fields.issubset(requested_fields)
+
+
+def _structured_comparison_answer(
+    question: str,
+    plan: QueryPlan,
+    evidence_items: list[Evidence],
+    constraints: ConstraintResult,
+) -> VerifiedAnswer | None:
+    """Answer named-food comparisons from recorded fields, not model guesses."""
+    if plan.intent != "comparison":
+        return None
+
+    matched: list[tuple[tuple[int, int, int], Evidence]] = []
+    seen: set[str] = set()
+    for item in evidence_items:
+        score = _food_match_score(question, item)
+        if score is not None and item.evidence_id not in seen:
+            seen.add(item.evidence_id)
+            matched.append((score, item))
+    matched.sort(key=lambda pair: pair[0], reverse=True)
+    foods = [item for _, item in matched]
+    if len(foods) < 2:
+        return None
+
+    requested = []
+    q = question.casefold()
+    for label, unit, aliases in (
+        ("Calories", "kcal", ("calorie", "calories", "kcal")),
+        ("Protein", "g", ("protein",)),
+        ("Carbohydrates", "g", ("carbohydrate", "carbohydrates", "carbs")),
+        ("Fat", "g", ("fat",)),
+    ):
+        if any(re.search(rf"\b{re.escape(alias)}\b", q) for alias in aliases):
+            requested.append((label, unit))
+    if not requested:
+        requested = [("Calories", "kcal"), ("Protein", "g")]
+
+    values: dict[str, dict[str, float]] = {}
+    display: dict[str, dict[str, str]] = {}
+    for item in foods:
+        name = str(item.metadata.get("name", "Food item"))
+        values[name] = {}
+        display[name] = {}
+        for label, unit in requested:
+            raw = _record_value(item, label, unit)
+            if raw is not None:
+                try:
+                    values[name][label] = float(raw)
+                    display[name][label] = raw
+                except ValueError:
+                    continue
+
+    # Only compare the two strongest explicitly named food matches.
+    foods = foods[:2]
+    names = [str(item.metadata.get("name", "Food item")) for item in foods]
+    claims: list[str] = []
+    for label, unit in requested:
+        if all(label in values.get(name, {}) for name in names):
+            claims.append(
+                f"{names[0]}: {label.lower()} {display[names[0]][label]} {unit} per recorded serving; "
+                f"{names[1]}: {label.lower()} {display[names[1]][label]} {unit} per recorded serving."
+            )
+    if not claims:
+        return None
+
+    if re.search(r"\b(?:which|who)\b.{0,80}\b(?:fewer|less|lower)\b.{0,80}\bcalories?\b", q) or re.search(r"\bwhich\s+has\s+fewer\s+calories?\b", q):
+        if all("Calories" in values.get(name, {}) for name in names):
+            lower = min(names, key=lambda name: values[name]["Calories"])
+            claims.append(f"{lower} has fewer recorded calories per serving.")
+
+    warnings = list(constraints.warnings)
+    if any(item.is_estimate for item in foods):
+        warnings.append("Some cited nutrition values are dataset estimates and should not be treated as authoritative measurements.")
+    if any(item.authority_score < 0.5 for item in foods):
+        warnings.append("Some cited records have limited source verification; treat the information as provisional.")
+    return VerifiedAnswer(
+        answer=" ".join(claims),
+        citations=[_citation_for(item) for item in foods],
+        warnings=warnings,
+        supported_claims=len(claims),
+        rejected_claims=0,
+    )
 
 
 def generate_verified_answer(
@@ -736,6 +965,12 @@ def generate_verified_answer(
             supported_claims=0,
             rejected_claims=0,
         )
+
+    comparison_answer = _structured_comparison_answer(
+        question, plan, evidence_items, constraints
+    )
+    if comparison_answer is not None:
+        return comparison_answer
 
     structured_answer = _structured_lookup_answer(
         question,

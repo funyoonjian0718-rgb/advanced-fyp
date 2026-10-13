@@ -357,7 +357,7 @@ def extract_numeric_constraints(
     operator_first_pattern = re.compile(
     rf"\b(?P<operator>{operator_pattern})\s+"
     rf"(?P<value>\d+(?:\.\d+)?)\s*(?:g|mg|kcal|calories?)?\s*"
-    rf"(?P<field>{field_pattern})\b",
+    rf"(?:of\s+)?(?P<field>{field_pattern})\b",
     flags=re.IGNORECASE,
 )
 

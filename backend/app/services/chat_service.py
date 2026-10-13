@@ -13,10 +13,17 @@ from app.services.generation import (
     EvidenceVerificationError,
     ModelOutputError,
     VerifiedAnswer,
+    generate_meal_plan_answer,
     generate_verified_answer,
+    is_meal_plan_request,
 )
 from app.services.query_processor import process_query
-from app.services.retrieval import compress_evidence, rerank_evidence, retrieve_evidence
+from app.services.retrieval import (
+    compress_evidence,
+    rerank_evidence,
+    retrieve_evidence,
+    retrieve_meal_plan_foods,
+)
 
 '''
 process the user's question through the complete RAG pipeline
@@ -116,7 +123,10 @@ def create_chat_response(
         # Retrieve candidate evidence using the query plan.
         # The retrieval stage combines lexical BM25 search with
         # dense vector search from Qdrant.
-        retrieved = retrieve_evidence(db, plan)
+        if is_meal_plan_request(message) and not plan.constraints.numeric_constraints:
+            retrieved = retrieve_meal_plan_foods(db, plan)
+        else:
+            retrieved = retrieve_evidence(db, plan)
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -167,6 +177,18 @@ def create_chat_response(
         verified = _safe_refusal(constrained)
     elif not constrained.allowed:
         verified = _safe_refusal(constrained)
+    elif (
+    is_meal_plan_request(message)
+    and not plan.constraints.numeric_constraints
+    ):
+        # Meal plans are composed from already-filtered structured food records.
+        # This avoids asking the small local LLM to invent a multi-item answer
+        # that the strict single-claim verifier cannot validate.
+        verified = generate_meal_plan_answer(
+            message,
+            constrained.allowed,
+            constrained,
+        )
     elif plan.structured_lookup and not plan.constraints.numeric_constraints:
         verified = generate_verified_answer(
             message,

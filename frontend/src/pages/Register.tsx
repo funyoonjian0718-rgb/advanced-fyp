@@ -57,10 +57,11 @@ function Register() {
             setPassword("");
             setConfirmPassword("");
 
-            // Wait a short moment so the user can see the
-            // success message before going to the login page.
+            // Registration creates the account, then the user logs in.
+            // After login, the app checks whether dietary profile onboarding
+            // is needed and directs them to the profile form if incomplete.
             setTimeout(() => {
-                navigate("/login");
+                navigate("/login", { replace: true });
             }, 1000);
 
         } catch (error: any) {

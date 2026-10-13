@@ -282,6 +282,54 @@ def _direct_food_matches(query: str, corpus: list[Evidence]) -> list[Evidence]:
     ]
 
 
+def retrieve_meal_plan_foods(
+    db: Session,
+    plan: QueryPlan,
+    *,
+    candidate_limit: int = 30,
+) -> list[Evidence]:
+    """Return structured food records for a meal-plan request.
+
+    General semantic retrieval can rank document chunks above food records.
+    Meal-plan composition needs structured food evidence, so query the food
+    table directly, then apply the same dietary/allergen enforcement used by
+    the chat service. If no eligible foods remain, return excluded candidates
+    so the caller can preserve its existing safe-refusal behaviour.
+    """
+    foods = db.scalars(
+        select(FoodNutrition)
+        .options(joinedload(FoodNutrition.source))
+        .order_by(FoodNutrition.id)
+    ).all()
+    candidates = [food_evidence(food) for food in foods]
+    if not candidates:
+        return []
+
+    filtered = enforce_constraints(candidates, plan)
+    eligible = list(filtered.allowed)
+
+    # Prefer a spread of categories for a more useful illustrative sample,
+    # without inventing food names or changing any recorded nutrition values.
+    diverse: list[Evidence] = []
+    seen_categories: set[str] = set()
+    remaining: list[Evidence] = []
+    for item in eligible:
+        category = str(item.metadata.get("category") or "").strip().casefold()
+        if category and category not in seen_categories:
+            diverse.append(item)
+            seen_categories.add(category)
+        else:
+            remaining.append(item)
+
+    selected = (diverse + remaining)[:candidate_limit]
+    if selected:
+        return selected
+
+    # Preserve excluded evidence when everything is excluded so the normal
+    # constraint handler can produce its established refusal and warnings.
+    return filtered.excluded[:candidate_limit]
+
+
 def retrieve_evidence(
     db: Session,
     plan: QueryPlan,
@@ -366,8 +414,16 @@ def _retrieve_ranked_evidence(
         "structured_lookup",
         "comparison",
     }:
-        direct_matches = _direct_food_matches(plan.queries[0], list(index.corpus))
-        direct_ids = {item.evidence_id for item in direct_matches}
+        # Search every query variant for explicit food names. This is important
+        # for comparisons: both named foods must be retained even if the first
+        # query variant or semantic ranking favours only one of them.
+        direct_matches: list[Evidence] = []
+        direct_ids: set[str] = set()
+        for direct_query in query_set:
+            for item in _direct_food_matches(direct_query, list(index.corpus)):
+                if item.evidence_id not in direct_ids:
+                    direct_ids.add(item.evidence_id)
+                    direct_matches.append(item)
         ordered = direct_matches + [
             item for item in ordered if item.evidence_id not in direct_ids
         ]
